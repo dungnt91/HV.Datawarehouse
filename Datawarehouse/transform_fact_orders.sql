@@ -15,8 +15,9 @@ SELECT
  
       -- Phân biệt OrderType
        CASE 
-              WHEN ord_order.OrderType = 2 THEN 'MARKETPLACE'
-       ELSE 'NON-MARKETPLACE' END AS OrderType,
+            WHEN ord_order.OrderType = 2 THEN 'MARKETPLACE'
+            ELSE 'NON-MARKETPLACE' 
+       END AS OrderType,
         
         -- MarketplaceKey: Xác định sàn TMĐT
         CASE
