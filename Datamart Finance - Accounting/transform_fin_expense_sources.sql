@@ -11,6 +11,7 @@ WITH src_fin AS (
     . Không lấy Phí thuế sàn, Phí dịch vụ, Phí vận chuyển của sàn, Affiliate/Hoa hồng giới thiệu, Phí quản lý sàn, Phí thanh toán, Chi phí Ads sàn, Chi phí Ads các kênh social, Chi phí hoàn hàng 
 */
 
+
   SELECT
     CAST(pay.id AS STRING)       AS maphieuchi,
     CAST(paytrans.id AS STRING) AS malenhchi,
@@ -75,17 +76,28 @@ WITH src_fin AS (
   LEFT JOIN `hv-data.hv_money_dwh.b_bank_accounts` AS bank ON bank.id = paytrans.transfer_bank_account_id
   LEFT JOIN `hv-data.hv_money_dwh.s_organizations` AS org ON org.id = pay.organization_id
   WHERE pay.status_id = 3  --Chỉ lấy Phiếu ở trạng thái Đã hoàn thành 
-    AND ((DATE(pay.payment_datetime) >= '2025-10-01'AND org.id = 3 AND team.id <> 1105) --Phạm vi dữ liệu: Quỹ HV Net ĐNA (Từ tháng 10/2025), không lấy bộ phận "Tiền cơm nhân sự"
-    OR (DATE(pay.payment_datetime) >= '2025-11-01' AND org.id = 5)) --Phạm vi dữ liệu: Khải Hoàn Net (Từ tháng 11/2025)
     AND pay.typeform = 1  -- Chỉ lấy Phiếu đề nghị chi - Loại Thanh toán 
-
-    --Danh mục chi phí: Chỉ lấy CP BÁN HÀNG, QUẢN LÝ DN và PHÍ DỰ PHÒNG DN
-    AND spendcat.id IN (2,3,4,17,15,16) 
-    /*+ Chi phí:
-    . Không lấy Lương Khối Kinh doanh BU (Lương, BHXH), Lương K.VH Tổng Cty (Lương, BHXH), Lương K. VH BU (Lương, BHXH)
-    . Không lấy Chế độ chính sách (Team <> Tiền cơm nhân sự)
-    . Không lấy Phí thuế sàn, Phí dịch vụ, Phí vận chuyển của sàn, Affiliate/Hoa hồng giới thiệu, Phí quản lý sàn, Phí thanh toán, Chi phí Ads sàn, Chi phí Ads các kênh social, Chi phí hoàn hàng*/
-    AND spend.id NOT IN (1433,1440,1434,1436,1438,1439,1437,1482,1488,1487,1361,1357,1362,1358,1356,1359,1432,1455,1454,1458,1459,1462,1463,1257) 
+  -- Phạm vi dữ liệu: Quỹ HV Net DNA
+    AND (org.id = 3 
+        AND (DATE(pay.payment_datetime) >= '2025-10-01'
+        --Không lấy bộ phận "Tiền cơm nhân sự"
+        AND team.id <> 1105 
+        --Danh mục chi phí: Chỉ lấy CP BÁN HÀNG, QUẢN LÝ DN và PHÍ DỰ PHÒNG DN
+        AND spendcat.id IN (2,3,4) 
+        AND spend.id NOT IN (1432,1361,1357,1362,1358,1356,1359,1355,1366,1368,1369,1377,1376,1373,1372)
+      )
+    
+    --Phạm vi dữ liệu: Khải Hoàn Net 
+    OR (org.id = 5
+        AND DATE(pay.payment_datetime) >= '2025-11-01'
+        --Danh mục chi phí: Chỉ lấy CP BÁN HÀNG, QUẢN LÝ DN và PHÍ DỰ PHÒNG DN
+        AND spendcat.id IN (17,15,16) 
+        --Nhóm chi phí: Không lấy Lương Khối Kinh doanh BU, Lương K.VH Tổng Cty, Lương K. VH BU 
+        AND spendtype.id NOT IN (1117,1119,1120)
+        AND spend.id NOT IN (1433,1440,1434,1436,1438,1439,1437,1482,1455,1454,1453,1458,1457,1459,1462,1463,1461,1452,1456,1460)
+      ) 
+    )
+  
 ),
 
 src_global_phieu AS (
