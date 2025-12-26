@@ -1,4 +1,3 @@
-.
 -- Facebook Ads
 SELECT
   'FB-ADS' as source,
@@ -7,8 +6,16 @@ SELECT
   facebook_ads.campaign_id,
   facebook_ads.campaign_name,
   DATE(facebook_ads.date_start) as segments_date,
+
   facebook_ads.spend,
   facebook_ads.account_currency as currency,
+
+-- Currency exchange 
+  IF(
+    facebook_ads.account_currency = 'USD',
+    cur_exc.exchange_rate_facebook,
+    1
+  ) AS exchange_rate,
 
   projectx.CountryId                  AS CountryKey,
   user.bu_id                          AS BusinessUnitKey,
@@ -17,10 +24,11 @@ SELECT
   campaigns_all_sources.product_id    AS ProductKey,
   team.Management_Employee            AS MarketerEmployeeId, 
 
-  facebook_ads.impressions,
+  facebook_ads.impressions,  
   facebook_ads.reach,
   facebook_ads.clicks,
   0 AS conversion,
+
 -- Parse purchases
   (
     SELECT CAST(JSON_EXTRACT_SCALAR(action, '$.value') AS INT64)
@@ -57,6 +65,11 @@ LEFT JOIN `hvnet_products_dwh.us_projects_teams` team
         ON campaigns_all_sources.team_id = team.Id
 LEFT JOIN `hvnet_products_dwh.us_projects` projectx on campaigns_all_sources.project_id = projectx.Id
 LEFT JOIN `hvnet_products_dwh.us_users` user on team.Management_Employee = user.UserName
+LEFT JOIN `hv-data.hvnet_products_dwh.Currency_Exchange_currency_exchange` cur_exc 
+        ON projectx.CountryId  = cur_exc.CountryId AND campaigns_all_sources.project_id = cur_exc.ProjectId 
+        AND cur_exc.DateKey = CAST(FORMAT_DATE('%Y%m%d', DATE(facebook_ads.date_start)) AS INT64
+)
+    
 
 UNION ALL
 
@@ -68,8 +81,17 @@ SELECT
   tiktok_ads.campaign_id,
   tiktok_ads_campaign.campaign_name,
   DATE(tiktok_ads.stat_time_day) as segments_date,
+
   tiktok_ads.spend,
   campaigns_all_sources.currency      as currency,
+
+  -- Currency exchange 
+  IF(
+    campaigns_all_sources.currency = 'USD',
+    cur_exc.exchange_rate_tiktok,
+    1
+  ) AS exchange_rate,
+
   projectx.CountryId                  AS CountryKey,
   user.bu_id                          AS BusinessUnitKey,
   campaigns_all_sources.project_id    AS ProjectKey,
@@ -81,6 +103,7 @@ SELECT
   tiktok_ads.reach,
   tiktok_ads.clicks,
   SAFE_CAST(tiktok_ads.conversion AS INT64) as conversions,
+
   NULL as purchases,
   NULL as leads,
   NULL as add_to_cart,
@@ -97,6 +120,9 @@ LEFT JOIN `hvnet_products_dwh.us_projects_teams` team
         ON campaigns_all_sources.team_id = team.Id
 LEFT JOIN `hvnet_products_dwh.us_projects` projectx on campaigns_all_sources.project_id = projectx.Id
 LEFT JOIN `hvnet_products_dwh.us_users` user on team.Management_Employee = user.UserName
+LEFT JOIN `hv-data.hvnet_products_dwh.Currency_Exchange_currency_exchange` cur_exc 
+        ON projectx.CountryId  = cur_exc.CountryId AND campaigns_all_sources.project_id = cur_exc.ProjectId 
+        AND cur_exc.DateKey = CAST(FORMAT_DATE('%Y%m%d', DATE(tiktok_ads.stat_time_day)) AS INT64)
 
 
 UNION ALL
@@ -111,6 +137,13 @@ SELECT
   google_ads.segments_date,
   SUM(google_ads.metrics.costMicros) / 1000000 AS spend,
   campaigns_all_sources.currency AS currency,
+
+  -- Currency exchange 
+  IF(
+    campaigns_all_sources.currency = 'USD',
+    cur_exc.exchange_rate_google,
+    1
+  ) AS exchange_rate,
 
   projectx.CountryId                  AS CountryKey,
   user.bu_id                          AS BusinessUnitKey,
@@ -137,4 +170,8 @@ LEFT JOIN `hvnet_products_dwh.us_projects_teams` team
         ON campaigns_all_sources.team_id = team.Id
 LEFT JOIN `hvnet_products_dwh.us_projects` projectx on campaigns_all_sources.project_id = projectx.Id
 LEFT JOIN `hvnet_products_dwh.us_users` user on team.Management_Employee = user.UserName
+LEFT JOIN `hv-data.hvnet_products_dwh.Currency_Exchange_currency_exchange` cur_exc 
+        ON projectx.CountryId  = cur_exc.CountryId AND campaigns_all_sources.project_id = cur_exc.ProjectId 
+        AND cur_exc.DateKey = CAST(FORMAT_DATE('%Y%m%d', google_ads.segments_date) AS INT64)
+
 GROUP BY ALL

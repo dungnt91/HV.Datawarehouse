@@ -1,6 +1,12 @@
 SELECT 
         ord_order.CreatedData AS CreatedData,
         ord_order.CustomerId AS CustomerKey,
+
+      -- Phân biệt OrderType
+       CASE 
+            WHEN ord_order.OrderType = 2 THEN 'MARKETPLACE'
+            ELSE 'NON-MARKETPLACE' 
+       END AS OrderType,
         
         -- OrderSourceKey: Xác định nguồn đơn hàng
         CASE 
@@ -59,6 +65,11 @@ SELECT
         ord_order_line.ProductId        AS ProductKey,
         ord_order_line.ProductName      AS ProductName,
         ord_order_line.IsProductGift    AS IsProductGift,
+
+        -- ==========================================
+        -- CURRENCY & EXCHANGE RATE
+        -- ==========================================
+        cur_exc.exchange_rate AS ExchangeRate,
 
         -- ==========================================
         -- ORDER LINE METRICS - QUANTITY
@@ -150,6 +161,9 @@ SELECT
 
     LEFT JOIN `hvnet_products_dwh.JT_Regions_jt_regions` regVN ON ord_order.CountryId = 9	AND ord_order.DistrictId = regVN.areaId
     LEFT JOIN `hvnet_products_dwh.JT_Regions_jt_regions` regOS ON ord_order.CountryId <> 9	AND ord_order.DistrictId = regOS.Id
+
+    LEFT JOIN `hv-data.hvnet_products_dwh.Currency_Exchange_currency_exchange` cur_exc 
+        ON ord_order.CountryId = cur_exc.CountryId AND ord_order.ProjectId = cur_exc.ProjectId AND cur_exc.DateKey = ord_order.CreatedOrderKey
     
     WHERE ord_order.CreatedDataKey >= 20250101
         AND NOT EXISTS (
