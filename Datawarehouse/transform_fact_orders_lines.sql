@@ -12,12 +12,6 @@ SELECT
             WHEN ord_order.SourceId = 5 THEN 'ZALO-ADS'
             ELSE 'UNKNOWN'
         END AS OrderSourceKey,
- 
-      -- Phân biệt OrderType
-       CASE 
-            WHEN ord_order.OrderType = 2 THEN 'MARKETPLACE'
-            ELSE 'NON-MARKETPLACE' 
-       END AS OrderType,
         
         -- MarketplaceKey: Xác định sàn TMĐT
         CASE
@@ -52,97 +46,50 @@ SELECT
         ord_order.OrderCode AS OrderCode,
         ord_order.EcommerceOrderId AS MarketplaceOrderId,
         ord_pre_order.SalepageId AS FormId,
-        ord_order.PreOrderId AS LeadId,
         
         -- ==========================================
         -- EMPLOYEE DIMENSIONS
         -- ==========================================
         team.Management_Employee AS MarketerEmployeeId,
         ord_order.CreatedBy AS SaleEmployeeId,
-        ord_order.PackingBy AS PackedByEmployeeId,
-        ord_order.Takecare_User AS DeliveryIssueHandledByEmployeeId,
 
         -- ==========================================
-        -- CURRENCY & EXCHANGE RATE
+        -- PRODUCT DIMENSIONS
         -- ==========================================
-        cur_exc.exchange_rate AS ExchangeRate,
+        ord_order_line.ProductId        AS ProductKey,
+        ord_order_line.ProductName      AS ProductName,
+        ord_order_line.IsProductGift    AS IsProductGift,
+
+        -- ==========================================
+        -- ORDER LINE METRICS - QUANTITY
+        -- ==========================================
         
-        -- ==========================================
-        -- ORDER METRICS - QUANTITY
-        -- ==========================================
-        ord_order.TotalProductType AS TotalItemCount,
-        ord_order.TotalQuantity AS TotalQuantity,
-        (ord_order.TotalProductType - COALESCE(ord_order.TotalProductGiftType, 0)) AS TotalItemCountExcludeGift,
-        (ord_order.TotalQuantity - COALESCE(ord_order.TotalGiftQuantity, 0)) AS TotalQuantityExcludeGift,
-        ord_order.TotalProductGiftType AS TotalGiftItemCount,
-        ord_order.TotalGiftQuantity AS TotalGiftQuantity,
-        SAFE_DIVIDE(ord_order.NetWeight, 1000) AS TotalItemWeight,
+        ord_order_line.UnitCost,
+        ord_order_line.ProductCost,
+        ord_order_line.GiftCost,
+        ord_order_line.TotalCost,
+        ord_order_line.UnitPrice,
+        ord_order_line.TotalPrice,
+        ord_order_line.ItemRatio,
+        ord_order_line.ShipByCustomer,
+        ord_order_line.DiscountAmount,
+        ord_order_line.Amount,
+        ord_order_line.PromotionCost,
+        ord_order_line.ShippingFee,
+        ord_order_line.ShippingCodFee,
+        ord_order_line.ShippingCodFeeVAT,
+        ord_order_line.ShippingFeeReturn,
+        ord_order_line.ReturnDiscount,
+        ord_order_line.ShippingFeeTotal,
+        ord_order_line.CodDifference,
+        ord_order_line.PlatformShippingFee,
+        ord_order_line.PlatformShippingFeeReturn,
+        ord_order_line.PlatformFee,
+        ord_order_line.PlatformTaxFee,
+        ord_order_line.PlatformFeeTotal,
+        ord_order_line.GrossProfit,
         
-        -- ==========================================
-        -- ORDER METRICS - REVENUE
-        -- ==========================================
-        ord_order.TotalPrice AS GrossAmount,
-        ord_order.Discount AS DiscountAmount,
-        ord_order.ShipByCustomer AS CustomerShippingFee,
-        ord_order.Amount AS NetAmount,
-        
-        -- VAT Measures
-        ord_order.AmountBeforeVAT AS AmountBeforeVAT,
-        country.vat_rate AS VATRate,
-        ord_order.VATAmount AS VATAmount,
-        
-        -- ==========================================
-        -- ORDER METRICS - COST
-        -- ==========================================
-        -- COGS
-        ord_order.ProductCost AS ProductCost,
-        ord_order.GiftCost AS GiftCost,
-        ord_order.TotalCost AS TotalCOGS,
-        
-        -- Platform Fees
-        ord_order.PlatformServiceFee AS PlatformServiceFee,
-        ord_order.PlatformTransactionFee AS PlatformTransactionFee,
-        ord_order.PlatformFee AS PlatformCommissionFee,
-        ord_order.PlatformAffiliateCommissionFee AS PlatformAffiliateFee,
-        ord_order.PlatformShippingFee AS PlatformShippingSubsidy,
-        ord_order.PlatformTaxFee AS PlatformTaxFee,
-        ord_order.PlatformOtherFee AS PlatformMarketingFee,
-        ord_order.PlatformShippingFeeReturn AS PlatformReturnHandlingFee,
-        ord_order.PlatformFeeTotal AS TotalPlatformFees,
-        
-        -- Shipping Costs
-        ord_order.ShippingFee AS ShippingBaseFee,
-        ord_order.ShippingCodFee AS ShippingCODFee,
-        ord_order.ShippingCodFeeVAT AS ShippingCODFeeVAT,
-        ord_order.ShippingFeeReturn AS ShippingReturnFee,
-        ord_order.ShippingFeeTotal AS TotalShippingCost,
-        
-        -- Total Operating Cost
-        (COALESCE(ord_order.TotalCost, 0) + 
-         COALESCE(ord_order.PlatformFeeTotal, 0) + 
-         COALESCE(ord_order.ShippingFeeTotal, 0)) AS TotalOperatingCost,
-        
-        -- ==========================================
-        -- ORDER METRICS - PROFITABILITY
-        -- ==========================================
-        (ord_order.Amount - COALESCE(ord_order.TotalCost, 0)) AS GrossProfit,
-        (ord_order.Amount - COALESCE(ord_order.TotalCost, 0) - 
-         COALESCE(ord_order.PlatformFeeTotal, 0) - 
-         COALESCE(ord_order.ShippingFeeTotal, 0)) AS NetProfit,
-        SAFE_DIVIDE(
-            (ord_order.Amount - COALESCE(ord_order.TotalCost, 0) - 
-             COALESCE(ord_order.PlatformFeeTotal, 0) - 
-             COALESCE(ord_order.ShippingFeeTotal, 0)),
-            NULLIF(ord_order.Amount, 0)
-        ) * 100 AS ProfitMargin,
-        
-        -- ==========================================
-        -- ORDER METRICS - FULFILLMENT
-        -- ==========================================
-        DATE_DIFF(DATE(ord_order.OnDeliveryDate), DATE(ord_order.CreatedAt), DAY) AS OrderProcessingDays,
-        DATE_DIFF(DATE(ord_order.success_delivery_date), DATE(ord_order.OnDeliveryDate), DAY) AS ShippingDays,
-        DATE_DIFF(DATE(ord_order.success_delivery_date), DATE(ord_order.CreatedAt), DAY) AS TotalFulfillmentDays,
-        
+
         -- ==========================================
         -- FLAGS & INDICATORS
         -- ==========================================
@@ -185,6 +132,8 @@ SELECT
         ord_order.CreatedAt AS CreatedAt
         
     FROM `hvnet_products_dwh.od_orders` ord_order
+    LEFT JOIN `hvnet_products_dwh.od_orders_items` ord_order_line 
+        ON ord_order.Id = ord_order_line.OrderId
     LEFT JOIN `hvnet_products_dwh.Pd_Products_od_pre_orders` ord_pre_order 
         ON ord_order.PreOrderId = ord_pre_order.Id
     LEFT JOIN `hvnet_products_dwh.us_projects` project 
@@ -201,9 +150,6 @@ SELECT
 
     LEFT JOIN `hvnet_products_dwh.JT_Regions_jt_regions` regVN ON ord_order.CountryId = 9	AND ord_order.DistrictId = regVN.areaId
     LEFT JOIN `hvnet_products_dwh.JT_Regions_jt_regions` regOS ON ord_order.CountryId <> 9	AND ord_order.DistrictId = regOS.Id
-
-    LEFT JOIN `hv-data.hvnet_products_dwh.Currency_Exchange_currency_exchange` cur_exc 
-        ON ord_order.CountryId = cur_exc.CountryId AND ord_order.ProjectId = cur_exc.ProjectId AND cur_exc.DateKey = ord_order.CreatedOrderKey
     
     WHERE ord_order.CreatedDataKey >= 20250101
         AND NOT EXISTS (
