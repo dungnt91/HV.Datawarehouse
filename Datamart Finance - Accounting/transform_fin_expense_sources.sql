@@ -94,7 +94,7 @@ WITH src_fin AS (
         AND spendcat.id IN (17,15,16) 
         --Nhóm chi phí: Không lấy Lương Khối Kinh doanh BU, Lương K.VH Tổng Cty, Lương K. VH BU 
         AND spendtype.id NOT IN (1117,1119,1120)
-        AND spend.id NOT IN (1433,1440,1434,1436,1438,1439,1437,1482,1455,1454,1453,1458,1457,1459,1462,1463,1461,1452,1456,1460)
+        AND spend.id NOT IN (1433,1440,1434,1436,1438,1439,1437,1482)
       ) 
     )
   
