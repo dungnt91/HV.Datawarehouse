@@ -35,7 +35,7 @@ WITH Calc AS (
     END AS Rate,
 
     ads.AdsFeeTotal
-  FROM `hv-data.hvnet_products_dwh.Pd_Products_pd_products_ads` AS ads
+  FROM `hv-data.hvnet_products_dwh.Pd_Products_Ads_pd_products_ads` AS ads
   LEFT JOIN `hv-data.hvnet_products_dwh.us_projects_teams` t
     ON t.Id = ads.TeamId
   LEFT JOIN `hv-data.hvnet_products_dwh.us_users` u
