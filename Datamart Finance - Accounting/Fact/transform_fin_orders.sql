@@ -1,5 +1,3 @@
-DECLARE FromDate DATE DEFAULT DATE '2025-10-01';
-
 WITH Orders AS (
   SELECT
       Id,
@@ -121,7 +119,7 @@ BaseData AS (
   JOIN StatusLogic s ON o.Id = s.Id
   JOIN `hv-data.hvnet_products_dwh.us_countries` c ON c.CountryId = o.CountryId
   JOIN `hv-data.hvnet_products_dwh.us_bussiness_units` bu ON bu.Id = o.BuId
-  WHERE d.CreatedOrder >= FromDate
+  WHERE d.CreatedOrder >= '2025-10-01'
     AND o.BuId IN (4,5,7,10,11,12,13,29,30,32,36,37)
   GROUP BY thitruong, bu_phongban, o.OrderType, OrderTypeLabel, status, thang
 )
