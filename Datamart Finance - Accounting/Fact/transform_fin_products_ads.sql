@@ -1,5 +1,3 @@
-DECLARE FromDate INT64 DEFAULT 20251001;
-
 WITH Calc AS (
   SELECT
     tt.CountryCode AS thitruong,
@@ -47,7 +45,7 @@ WITH Calc AS (
   LEFT JOIN `hv-data.hvnet_products_dwh.Currency_Exchange_currency_exchange` AS ex
     ON CAST(ex.DateKey AS STRING) = CAST(ads.DateKey AS STRING)
    AND ex.ProjectId = ads.ProjectId
-  WHERE CAST(ads.DateKey AS INT64) >= FromDate
+  WHERE CAST(ads.DateKey AS INT64) >= 20251001
     AND bu.name IS NOT NULL
 )
 
