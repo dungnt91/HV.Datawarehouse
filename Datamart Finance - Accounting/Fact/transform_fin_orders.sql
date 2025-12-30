@@ -1,10 +1,15 @@
-WITH Orders AS (
+WITH Params AS (
+  SELECT DATE '2025-10-01' AS FromDate
+),
+
+Orders AS (
   SELECT
       Id,
       CreatedOrder,
       success_delivery_date,
       PaymentDate,
       CancelledStockinDate,
+      ReturnDateKey,
       CountryId,
       BuId,
       ProjectId,
@@ -60,6 +65,7 @@ Rates AS (
 StatusLogic AS (
   SELECT
     o.Id,
+    o.StatusValue,
     CASE
       WHEN CAST(o.StatusValue AS STRING) NOT IN ('5','7') THEN ''
       ELSE
@@ -81,6 +87,11 @@ StatusLogic AS (
   JOIN Dates d ON o.Id = d.Id
 ),
 
+/* =========================
+   1) BaseData: số liệu theo CreatedOrder
+      - Cost CHỈ cho status 1,2,3,4
+      - KHÔNG join LostParcel ở đây
+   ========================= */
 BaseData AS (
   SELECT
     c.CountryCode AS thitruong,
@@ -102,7 +113,15 @@ BaseData AS (
       ) AS INT64
     ) AS Amount,
 
-    CAST(SUM(o.TotalCost * r.rate) AS INT64) AS Cost,
+    -- ✅ Cost chỉ dành cho đơn 1,2,3,4 (giá vốn hàng bán)
+    CAST(
+      CASE
+        WHEN CAST(o.StatusValue AS STRING) IN ('1','2','3','4')
+        THEN SUM(o.TotalCost * r.rate)
+        ELSE NULL
+      END AS INT64
+    ) AS Cost,
+
     CAST(SUM(o.ReturnDiscount * r.rate) AS INT64) AS ReturnDiscount,
     CAST(SUM(o.PlatformServiceFee * r.rate) AS INT64) AS PlatformServiceFee,
     CAST(SUM(o.PlatformTransactionFee * r.rate) AS INT64) AS PlatformTransactionFee,
@@ -119,9 +138,86 @@ BaseData AS (
   JOIN StatusLogic s ON o.Id = s.Id
   JOIN `hv-data.hvnet_products_dwh.us_countries` c ON c.CountryId = o.CountryId
   JOIN `hv-data.hvnet_products_dwh.us_bussiness_units` bu ON bu.Id = o.BuId
-  WHERE d.CreatedOrder >= '2025-10-01'
+  WHERE d.CreatedOrder >= (SELECT FromDate FROM Params)
     AND o.BuId IN (4,5,7,10,11,12,13,29,30,32,36,37)
-  GROUP BY thitruong, bu_phongban, o.OrderType, OrderTypeLabel, status, thang
+  GROUP BY thitruong, bu_phongban, o.OrderType, OrderTypeLabel, status, thang, o.StatusValue
+),
+
+/* =========================
+   2) LostParcel: nguồn riêng
+      - CHỈ StatusValue = 7
+      - tháng theo ReturnDateKey (chuẩn)
+   ========================= */
+LostParcelAgg AS (
+  SELECT
+    ctr.CountryCode AS thitruong,
+    bu.name         AS bu_phongban,
+    ord.OrderType,
+    IF(ord.OrderType = 2, 'Sàn TMĐT', 'Kênh bán hàng khác') AS OrderTypeLabel,
+
+    -- ✅ LostParcel là tiền huỷ hàng/hết hạn -> bạn muốn gom vào dự phòng DN
+    'Hủy' AS status,
+
+    FORMAT_DATE('%Y-%m', SAFE.PARSE_DATE('%Y%m%d', CAST(ord.ReturnDateKey AS STRING))) AS thang,
+
+    CAST(SUM(ord.TotalCost * COALESCE(ce.exchange_rate, 1)) AS INT64) AS LostParcelCost,
+    CAST(COUNT(DISTINCT ord.Id) AS INT64) AS LostParcelOrders
+  FROM Orders ord
+  JOIN Params p ON TRUE
+  LEFT JOIN `hv-data.hvnet_products_dwh.us_bussiness_units` bu
+    ON bu.Id = ord.BuId
+  LEFT JOIN `hv-data.hvnet_products_dwh.us_countries` ctr
+    ON ctr.CountryId = ord.CountryId
+  LEFT JOIN `hv-data.hvnet_products_dwh.Currency_Exchange_currency_exchange` ce
+    ON ce.ProjectId = ord.ProjectId
+   AND ce.DateKey   = ord.ReturnDateKey
+  WHERE SAFE.PARSE_DATE('%Y%m%d', CAST(ord.ReturnDateKey AS STRING)) >= p.FromDate
+    AND CAST(ord.StatusValue AS STRING) = '7'
+    AND ord.BuId IN (4,5,7,10,11,12,13,29,30,32,36,37,14,23,26)
+    AND EXISTS (
+      SELECT 1
+      FROM `hv-data.hvnet_products_dwh.wh_warehouses_stocks` w
+      WHERE w.ProjectId     = ord.ProjectId
+        AND w.InventoryId   = ord.Id
+        AND w.InventoryType = 'LostParcel'
+    )
+  GROUP BY thitruong, bu_phongban, ord.OrderType, OrderTypeLabel, status, thang
+),
+
+/* =========================
+   3) Unpivot 2 nguồn rồi UNION ALL
+   ========================= */
+AllMetrics AS (
+  SELECT
+    thitruong, bu_phongban, OrderTypeLabel, status, thang,
+    Metric, Value
+  FROM BaseData
+  UNPIVOT (
+    Value FOR Metric IN (
+      Amount,
+      Cost,
+      ReturnDiscount,
+      PlatformServiceFee,
+      PlatformTransactionFee,
+      PlatformFee,
+      PlatformAffiliateCommissionFee,
+      PlatformShippingFee,
+      PlatformTaxFee,
+      PlatformOtherFee,
+      TotalShippingFee,
+      ShippingFeeReturn
+    )
+  )
+
+  UNION ALL
+
+  SELECT
+    thitruong, bu_phongban, OrderTypeLabel, status, thang,
+    Metric, Value
+  FROM LostParcelAgg
+  UNPIVOT (
+    Value FOR Metric IN (LostParcelCost, LostParcelOrders)
+  )
 )
 
 SELECT
@@ -133,17 +229,14 @@ SELECT
   Metric,
   Value AS amount,
 
-  -- ================= CHI TIẾT =================
+  -- ============== CHI TIẾT ==============
   CASE
     WHEN Metric = 'Amount' THEN OrderTypeLabel
     WHEN Metric = 'ReturnDiscount' THEN 'Hoàn từ sàn/đơn vị vận chuyển'
 
-    WHEN Metric = 'Cost'
-     AND status IN ('Mới', 'Đang gói hàng', 'Đang giao hàng', 'Giao thành công')
-    THEN OrderTypeLabel
+    WHEN Metric = 'Cost' THEN 'Giá vốn'
 
-    WHEN Metric = 'Cost' AND status IN ('Hoàn', 'Hủy')
-    THEN 'Giá vốn'
+    WHEN Metric = 'LostParcelCost' THEN 'Tiền huỷ hàng/hết hạn'
 
     WHEN Metric = 'PlatformServiceFee' THEN 'Phí dịch vụ'
     WHEN Metric = 'PlatformTransactionFee' THEN 'Phí thanh toán'
@@ -156,18 +249,15 @@ SELECT
     WHEN Metric = 'ShippingFeeReturn' THEN 'Chi phí hoàn hàng'
   END AS chitiet,
 
-  -- ================= NHÓM =================
+  -- ============== NHÓM ==============
   CASE
     WHEN Metric = 'Amount' AND status = 'Hoàn' THEN 'Đơn hàng hoàn'
     WHEN Metric = 'Amount' AND status = 'Hủy' THEN 'Đơn hàng huỷ'
     WHEN Metric = 'Amount' THEN OrderTypeLabel
 
-    WHEN Metric = 'Cost'
-     AND status IN ('Mới', 'Đang gói hàng', 'Đang giao hàng', 'Giao thành công')
-    THEN OrderTypeLabel
+    WHEN Metric = 'Cost' THEN OrderTypeLabel
 
-    WHEN Metric = 'Cost' AND status IN ('Hoàn', 'Hủy')
-    THEN 'Chi phí huỷ hàng/hết hạn'
+    WHEN Metric IN ('LostParcelCost') THEN 'Chi phí huỷ hàng/hết hạn'
 
     WHEN Metric IN ('PlatformServiceFee','PlatformTransactionFee','PlatformFee',
                     'PlatformAffiliateCommissionFee','PlatformShippingFee',
@@ -181,14 +271,17 @@ SELECT
     THEN 'Hoàn từ sàn/đơn vị vận chuyển'
   END AS nhom,
 
-  -- ================= DANH MỤC =================
+  -- ============== DANH MỤC ==============
   CASE
     WHEN Metric = 'Amount' AND status = 'Giao thành công' THEN 'Doanh thu từ BH trực tiếp'
     WHEN Metric = 'Amount' AND status IN ('Mới','Đang gói hàng','Đang giao hàng') THEN 'Doanh số đang xử lý'
     WHEN Metric = 'Amount' AND status IN ('Hoàn','Hủy') THEN 'Các khoản giảm trừ'
     WHEN Metric = 'ReturnDiscount' THEN 'THU NHẬP KHÁC'
-    WHEN Metric = 'Cost' AND status IN ('Hoàn','Hủy') THEN 'PHÍ DỰ PHÒNG DN'
+
+    WHEN Metric = 'LostParcelCost' THEN 'PHÍ DỰ PHÒNG DN'
+
     WHEN Metric = 'Cost' THEN 'GIÁ VỐN HÀNG BÁN'
+
     WHEN Metric IN ('PlatformServiceFee','PlatformTransactionFee','PlatformFee',
                     'PlatformAffiliateCommissionFee','PlatformShippingFee',
                     'PlatformTaxFee','PlatformOtherFee',
@@ -198,24 +291,11 @@ SELECT
     ELSE 'CP BÁN HÀNG'
   END AS danhmuc,
 
-  -- ================= MỤC =================
-  CASE WHEN Metric IN ('Amount','ReturnDiscount') THEN 'Doanh số' ELSE 'Chi phí' END AS muc
+  -- ============== MỤC ==============
+  CASE
+    WHEN Metric IN ('Amount','ReturnDiscount') THEN 'Doanh số'
+    ELSE 'Chi phí'
+  END AS muc
 
-FROM BaseData
-UNPIVOT (
-  Value FOR Metric IN (
-    Amount,
-    Cost,
-    ReturnDiscount,
-    PlatformServiceFee,
-    PlatformTransactionFee,
-    PlatformFee,
-    PlatformAffiliateCommissionFee,
-    PlatformShippingFee,
-    PlatformTaxFee,
-    PlatformOtherFee,
-    TotalShippingFee,
-    ShippingFeeReturn
-  )
-)
+FROM AllMetrics
 ORDER BY thitruong, bu_phongban, thang, Metric;
