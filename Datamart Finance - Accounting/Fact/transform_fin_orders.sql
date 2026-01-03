@@ -29,7 +29,7 @@ Orders AS (
       ShippingFeeReturn,
       ShippingCodFee,
       ShippingCodFeeVAT
-  FROM `hv-data.hvnet_products_dwh.od_orders` o
+  FROM `hv-data.hvnet_products_dwh.H_Orders` o
   WHERE IsDeleted = FALSE
     AND NOT EXISTS (
       SELECT 1
@@ -298,4 +298,4 @@ SELECT
   END AS muc
 
 FROM AllMetrics
-ORDER BY thitruong, bu_phongban, thang, Metric;
+ORDER BY thitruong, bu_phongban, thang, Metric
