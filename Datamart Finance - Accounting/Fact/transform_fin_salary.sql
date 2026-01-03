@@ -1,0 +1,117 @@
+WITH src AS (
+  -- nguồn 1
+  SELECT
+    thitruong AS thitruong,
+    bu_phongban AS bu_phongban,
+    bo_phan_lam_viec,
+    thang AS thang,
+    ho_va_ten,
+    CAST(IFNULL(ket_qua_luong, 0)            AS FLOAT64) AS ket_qua_luong,
+    CAST(IFNULL(ket_qua_phuc_loi_nhan_su, 0) AS FLOAT64) AS ket_qua_che_do_chinh_sach,
+    CAST(IFNULL(ket_qua_thuong, 0)           AS FLOAT64) AS ket_qua_thuong,
+    CAST(IFNULL(ketqua_bhxh, 0)              AS FLOAT64) AS ket_qua_bhxh
+  FROM `hv-data.lark_dwh.lark_base_luong_khn_and_global`
+  WHERE thang >= '2025-10'
+    AND thitruong IS NOT NULL
+    AND bu_phongban IS NOT NULL
+    AND ho_va_ten IS NOT NULL
+
+  UNION ALL
+
+  -- nguồn 2
+  SELECT
+    thi_truong AS thitruong,
+    bu_pb      AS bu_phongban,
+    bo_phan_lam_viec,
+    nam__thang AS thang,
+    ho_va_ten,
+    CAST(IFNULL(ket_qua_luong, 0)            AS FLOAT64) AS ket_qua_luong,
+    CAST(IFNULL(ket_qua_che_do_chinh_sach, 0) AS FLOAT64) AS ket_qua_che_do_chinh_sach,
+    CAST(IFNULL(ket_qua_thuong, 0)           AS FLOAT64) AS ket_qua_thuong,
+    CAST(IFNULL(ket_qua_bhxh, 0)             AS FLOAT64) AS ket_qua_bhxh
+  FROM `hv-data.lark_dwh.lark_base_luong_t9_2025_t12_2025`
+  WHERE nam__thang >= '2025-10'
+    AND thi_truong IS NOT NULL
+    AND bu_pb IS NOT NULL
+    AND ho_va_ten IS NOT NULL
+),
+
+unpivot_cost AS (
+  SELECT
+    thitruong,
+    bu_phongban,
+    bo_phan_lam_viec,
+    thang,
+    ho_va_ten,
+    cost_type AS chitiet,
+    cost_value AS amount
+  FROM src
+  UNPIVOT (
+    cost_value FOR cost_type IN (
+      ket_qua_luong            AS 'Lương',
+      ket_qua_che_do_chinh_sach AS 'Chế độ chính sách',
+      ket_qua_thuong           AS 'Thưởng',
+      ket_qua_bhxh             AS 'BHXH'
+    )
+  )
+)
+
+SELECT
+  thitruong,
+  bu_phongban,
+  bo_phan_lam_viec,
+  thang,
+  ho_va_ten,
+  chitiet,
+  CAST(amount AS INT64) AS amount,
+
+  /* ===== KHỐI ===== */
+  CASE
+    WHEN REGEXP_CONTAINS(bu_phongban, r'(Phòng|Bộ phận)')
+      THEN 'Khối Vận hành'
+    ELSE 'Khối Kinh doanh'
+  END AS khoi,
+
+  /* ===== DANH MỤC ===== */
+  CASE
+    WHEN REGEXP_CONTAINS(bu_phongban, r'(Phòng|Bộ phận)')
+      THEN 'QUẢN LÝ DN'
+
+    WHEN bo_phan_lam_viec IN (
+      'Marketing',
+      'Video Editor',
+      'Content',
+      'Thiết kế',
+      'Truyền thông',
+      'Booking KOL',
+      'Video Producer',
+      'Kỹ sư AI',
+      'PR'
+    )
+      THEN 'CP BÁN HÀNG'
+
+    ELSE 'QUẢN LÝ DN'
+  END AS danh_muc,
+
+  /* ===== NHÓM ===== */
+  CASE
+    WHEN REGEXP_CONTAINS(bu_phongban, r'(Phòng|Bộ phận)')
+      THEN 'Lương K.VH Tổng Cty'
+
+    WHEN bo_phan_lam_viec IN (
+      'Marketing',
+      'Video Editor',
+      'Content',
+      'Thiết kế',
+      'Truyền thông',
+      'Booking KOL',
+      'Video Producer',
+      'Kỹ sư AI',
+      'PR'
+    )
+      THEN 'Lương Khối Kinh doanh BU'
+
+    ELSE 'Lương K. VH BU'
+  END AS nhom
+
+FROM unpivot_cost
