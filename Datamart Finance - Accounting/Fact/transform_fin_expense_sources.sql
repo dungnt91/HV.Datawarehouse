@@ -109,7 +109,9 @@ src_fin AS (
       'Phòng Công nghệ',
       'Phòng Dịch vụ khách hàng',
       'Bộ phận Kho',
-      'Phòng Giải pháp - Chiến lược'
+      'Phòng Giải pháp - Chiến lược',
+      'Phòng Vận hành thị trường toàn cầu',
+      'Bộ phận Quản trị thương hiệu ABERA'
     ) THEN 'Khối Vận hành'
     ELSE 'Khối Kinh doanh'
   END AS khoi,
@@ -186,9 +188,9 @@ WHERE pay.status_id = 3  --Chỉ lấy Phiếu ở trạng thái Đã hoàn thà
     -- Phạm vi dữ liệu: Quỹ HV Net DNA
     (
       org.id = 3
-      AND team.id <> 1105
-      AND spendcat.id IN (2,3,4)
-      AND spend.id NOT IN (1432,1361,1357,1362,1358,1356,1359,1355,1366,1368,1369,1377,1376,1373,1372)
+      AND (team.id = 1105)
+      AND (spendcat.id NOT IN (2,3,4)
+      OR spend.id IN (1432,1361,1357,1362,1358,1356,1359,1355,1366,1368,1369,1377,1376,1373,1372))
     )
 
     OR
@@ -196,9 +198,9 @@ WHERE pay.status_id = 3  --Chỉ lấy Phiếu ở trạng thái Đã hoàn thà
     -- Phạm vi dữ liệu: Khải Hoàn Net (lấy từ 01-10-2025)
     (
       org.id = 5
-      AND spendcat.id IN (17,15,16)
-      AND spendtype.id NOT IN (1117,1119,1120)
-      AND spend.id NOT IN (1433,1440,1434,1436,1438,1439,1437,1482)
+      AND (spendcat.id NOT IN (17,15,16)
+      OR spendtype.id IN (1117,1119,1120)
+      OR spend.id IN (1433,1440,1434,1436,1438,1439,1437,1482))
     )
   )
 ),
@@ -227,7 +229,9 @@ src_global_phieu AS (
             'Phòng Công nghệ',
             'Phòng Dịch vụ khách hàng',
             'Bộ phận Kho',
-            'Phòng Giải pháp - Chiến lược'
+            'Phòng Giải pháp - Chiến lược',
+             'Phòng Vận hành thị trường toàn cầu',
+      'Bộ phận Quản trị thương hiệu ABERA'
         )
         THEN 'Khối Vận hành'
         ELSE 'Khối Kinh doanh'
@@ -272,9 +276,9 @@ src_global_phieu AS (
   FROM `hv-data.lark_dwh.lark_base_global__tao_phieu_chi`
   WHERE status = 'Approved'
     AND TIMESTAMP_MILLIS(`ngay_chuyen_tien`) > '2025-10-01'
-    AND danh_muc_chi_phi IN ('CP BÁN HÀNG','QUẢN LÝ DN')
-    AND phan_loai_chi NOT IN ('Lương Khối Kinh doanh BU','Lương K. VH BU','Lương K.VH Tổng Cty')
-    AND loai_chi <> 'Phí vận chuyển đến khách hàng'
+    AND (danh_muc_chi_phi NOT IN ('CP BÁN HÀNG','QUẢN LÝ DN')
+    OR phan_loai_chi IN ('Lương Khối Kinh doanh BU','Lương K. VH BU','Lương K.VH Tổng Cty')
+    OR loai_chi = 'Phí vận chuyển đến khách hàng')
 ),
 
 src_global_phieu_bu AS (
@@ -302,7 +306,9 @@ src_global_phieu_bu AS (
             'Phòng Công nghệ',
             'Phòng Dịch vụ khách hàng',
             'Bộ phận Kho',
-            'Phòng Giải pháp - Chiến lược'
+            'Phòng Giải pháp - Chiến lược',
+            'Phòng Vận hành thị trường toàn cầu',
+      'Bộ phận Quản trị thương hiệu ABERA'
         )
         THEN 'Khối Vận hành'
         ELSE 'Khối Kinh doanh'
@@ -347,146 +353,9 @@ src_global_phieu_bu AS (
   FROM `hv-data.lark_dwh.lark_base_global__tao_phieu_chi__bu`
     WHERE status = 'Approved'
     AND TIMESTAMP_MILLIS(`ngay_chuyen_tien`) > '2025-10-01'
-    AND danh_muc_chi_phi IN ('CP BÁN HÀNG','QUẢN LÝ DN')
-    AND phan_loai_chi NOT IN ('Lương Khối Kinh doanh BU','Lương K. VH BU','Lương K.VH Tổng Cty')
-    AND loai_chi NOT IN ('Chi phí Ads sàn','Phí vận chuyển đến khách hàng')
-),
-
-src_tien_com AS (
-/* 4. Nguồn chi phí: File nhập tay - Bảng Tiền cơm (Phòng Nhân sự) */
-  SELECT
-    CAST(NULL AS STRING) AS maphieuchi,
-    CAST(NULL AS STRING) AS malenhchi,
-    'Thanh toán'  AS loaiphieu,
-    CAST(NULL AS STRING) AS tochuc,
-    CASE
-        WHEN bo_phan IN (
-            'Vận hành chung',
-            'Phòng Quản trị thương hiệu',
-            'Phòng Cung ứng',
-            'Phòng Nhân sự',
-            'Phòng Kế toán',
-            'Phòng Công nghệ',
-            'Phòng Dịch vụ khách hàng',
-            'Bộ phận Kho',
-            'Phòng Giải pháp - Chiến lược'
-        )
-        THEN 'Khối Vận hành'
-        ELSE 'Khối Kinh doanh'
-    END AS khoi,   
-    'VN' AS thitruong,
-    CAST(bo_phan AS STRING) AS phongban,
-      CASE
-    WHEN bo_phan IN (
-      'Phòng Dịch vụ khách hàng',
-      'Bộ phận Kho',
-      'Bộ phận Quản trị thương hiệu ABERA',
-      'Phòng Cung ứng',
-      'Phòng Nhân sự',
-      'Phòng Kế toán',
-      'Phòng Công nghệ',
-      'Phòng Giải pháp - Chiến lược'
-    ) THEN 'QUẢN LÝ DN'
-    ELSE 'CP BÁN HÀNG'
-  END AS danhmucchiphi,
-
-  CASE
-    WHEN bo_phan IN (
-      'Phòng Dịch vụ khách hàng',
-      'Bộ phận Kho',
-      'Bộ phận Quản trị thương hiệu ABERA'
-    ) THEN 'Lương K. VH BU'
-    WHEN bo_phan IN (
-      'Phòng Cung ứng',
-      'Phòng Nhân sự',
-      'Phòng Kế toán',
-      'Phòng Công nghệ',
-      'Phòng Giải pháp - Chiến lược'
-    ) THEN 'Lương K.VH Tổng Cty'
-    ELSE 'Lương Khối Kinh doanh BU'
-  END AS nhomchiphi,
-
-  'Chế độ chính sách' AS loaichiphi,
-    CAST(NULL AS STRING) AS motaloaicp,
-    SAFE_CAST(tien_com AS NUMERIC) AS tienvnd,
-    CAST(NULL AS NUMERIC) AS tienvat,
-    CAST(NULL AS NUMERIC) AS tienbandia,
-    CAST(NULL AS NUMERIC) AS tigia,
-    CAST(NULL AS STRING)  AS donvitiente,
-
-    CAST(NULL AS TIMESTAMP) AS ngaylenphieu,
-    TIMESTAMP(PARSE_DATE('%Y-%m', thang)) AS ngaythanhtoan,
-
-    CONCAT('Thanh toán tiền cơm nhân sự của ', bo_phan) AS noidungchi,
-    CAST(NULL AS STRING) AS noidungthanhtoan,
-    CAST(NULL AS STRING) AS nguoitaophieu,
-    CAST(NULL AS STRING) AS nguoiduyetphieu,
-    CAST(NULL AS STRING) AS nguoichitien,
-    CAST(NULL AS STRING) AS taikhoanchi,
-    CAST(NULL AS STRING) AS sotaikhoanchi,
-    CAST(NULL AS STRING) AS tennganhangchi,
-    CAST(NULL AS STRING) AS viettatnganhangchi,
-    CAST(NULL AS STRING) AS taikhoannhan,
-    CAST(NULL AS STRING) AS sotaikhoannhan,
-    CAST(NULL AS STRING) AS tennganhangnhan,
-    CAST(NULL AS STRING) AS viettatnganhangnhan
-  FROM `hv-data.lark_dwh.lark_base_che_do_chinh_sach__tien_com`
-),
-
-src_lark_account AS (
-/* 4. Nguồn chi phí: File nhập tay - Phân bổ chi phí Lark (Phòng Kế toán) */
-  SELECT
-    CAST(NULL AS STRING) AS maphieuchi,
-    CAST(NULL AS STRING) AS malenhchi,
-        'Thanh toán'  AS loaiphieu,
-    CAST(NULL AS STRING) AS tochuc,
-    CASE
-        WHEN bo_phan IN (
-            'Vận hành chung',
-            'Phòng Quản trị thương hiệu',
-            'Phòng Cung ứng',
-            'Phòng Nhân sự',
-            'Phòng Kế toán',
-            'Phòng Công nghệ',
-            'Phòng Dịch vụ khách hàng',
-            'Bộ phận Kho',
-            'Phòng Giải pháp - Chiến lược'
-        )
-        THEN 'Khối Vận hành'
-        ELSE 'Khối Kinh doanh'
-    END AS khoi,
-    CAST(thi_truong AS STRING) AS thitruong,
-    CAST(bo_phan AS STRING) AS phongban,
-    'QUẢN LÝ DN'      AS danhmucchiphi,
-    'Công nghệ'      AS nhomchiphi,
-    'Hệ thống VP Số' AS loaichiphi,
-    CAST(NULL AS STRING) AS motaloaicp,
-    SAFE_CAST(chi_phi_tai_khoan AS NUMERIC) AS tienvnd,
-    CAST(NULL AS NUMERIC) AS tienvat,
-    CAST(NULL AS NUMERIC) AS tienbandia,
-    CAST(NULL AS NUMERIC) AS tigia,
-    CAST(NULL AS STRING)  AS donvitiente,
-
-    CAST(NULL AS TIMESTAMP) AS ngaylenphieu,
-    TIMESTAMP(PARSE_DATE('%Y-%m', thang)) AS ngaythanhtoan,
-
-    CONCAT(
-      'Tài khoản Lark cho nhân sự ',
-      CAST(ten_nguoi_quan_ly AS STRING)
-    ) AS noidungchi,
-    CAST(NULL AS STRING) AS noidungthanhtoan,
-    CAST(NULL AS STRING) AS nguoitaophieu,
-    CAST(NULL AS STRING) AS nguoiduyetphieu,
-    CAST(NULL AS STRING) AS nguoichitien,
-    CAST(NULL AS STRING) AS taikhoanchi,
-    CAST(NULL AS STRING) AS sotaikhoanchi,
-    CAST(NULL AS STRING) AS tennganhangchi,
-    CAST(NULL AS STRING) AS viettatnganhangchi,
-    CAST(NULL AS STRING) AS taikhoannhan,
-    CAST(NULL AS STRING) AS sotaikhoannhan,
-    CAST(NULL AS STRING) AS tennganhangnhan,
-    CAST(NULL AS STRING) AS viettatnganhangnhan
-  FROM `hv-data.lark_dwh.lark_base_lark__phan_bo_tai_khoan_lark`
+    AND (danh_muc_chi_phi NOT IN ('CP BÁN HÀNG','QUẢN LÝ DN')
+    OR phan_loai_chi IN ('Lương Khối Kinh doanh BU','Lương K. VH BU','Lương K.VH Tổng Cty')
+    OR loai_chi IN ('Chi phí Ads sàn','Phí vận chuyển đến khách hàng'))
 ),
 
 src_hoan_tra AS (
@@ -520,7 +389,9 @@ SELECT
             'Phòng Công nghệ',
             'Phòng Dịch vụ khách hàng',
             'Bộ phận Kho',
-            'Phòng Giải pháp - Chiến lược'
+            'Phòng Giải pháp - Chiến lược',
+            'Phòng Vận hành thị trường toàn cầu',
+      'Bộ phận Quản trị thương hiệu ABERA'
         )
         THEN 'Khối Vận hành'
         ELSE 'Khối Kinh doanh'
@@ -557,6 +428,7 @@ SELECT
       LEFT JOIN `spend_dedup` AS spend ON spend.name = cp.chi_phi 
     LEFT JOIN `hv-data.hv_money_dwh.m_spendings_types` AS spendtype ON spendtype.id = spend.spending_type_id
     LEFT JOIN `hv-data.hv_money_dwh.m_spending_categories` AS spendcat ON spendcat.id = spendtype.spending_category_id
+  WHERE spendcat.name NOT IN ('CP BÁN HÀNG','QUẢN LÝ DN','PHÍ DỰ PHÒNG DN')
 ),
 
 src_chi_ngoai AS (
@@ -590,7 +462,9 @@ SELECT
             'Phòng Công nghệ',
             'Phòng Dịch vụ khách hàng',
             'Bộ phận Kho',
-            'Phòng Giải pháp - Chiến lược'
+            'Phòng Giải pháp - Chiến lược',
+            'Phòng Vận hành thị trường toàn cầu',
+      'Bộ phận Quản trị thương hiệu ABERA'
         )
         THEN 'Khối Vận hành'
         ELSE 'Khối Kinh doanh'
@@ -626,14 +500,12 @@ SELECT
   FROM `hv-data.lark_dwh.lark_base_chi_phi_chi_ngoai__dong_tien` AS cp
       LEFT JOIN `spendtype_dedup` AS spendtype ON spendtype.name = cp.nhom_chi_phi
     LEFT JOIN `hv-data.hv_money_dwh.m_spending_categories` AS spendcat ON spendcat.id = spendtype.spending_category_id
-  WHERE bo_phan <> 'Vận hành chung'
+  WHERE bo_phan = 'Vận hành chung'
+    OR spendcat.name NOT IN ('CP BÁN HÀNG','QUẢN LÝ DN','PHÍ DỰ PHÒNG DN')
 )
 
-SELECT * FROM src_fin
-UNION ALL SELECT * FROM src_global_phieu
-UNION ALL SELECT * FROM src_global_phieu_bu
-UNION ALL SELECT * FROM src_tien_com
-UNION ALL SELECT * FROM src_lark_account
-UNION ALL SELECT * FROM src_hoan_tra
-UNION ALL SELECT * FROM src_chi_ngoai
-
+SELECT * FROM src_fin 
+UNION ALL SELECT * FROM src_global_phieu 
+UNION ALL SELECT * FROM src_global_phieu_bu 
+UNION ALL SELECT * FROM src_hoan_tra 
+UNION ALL SELECT * FROM src_chi_ngoai 
