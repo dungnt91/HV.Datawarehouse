@@ -1,6 +1,7 @@
 WITH src AS (
   -- nguồn 1
   SELECT
+   'bangkeluong_khn_va_global' AS nguondulieu,
     thitruong AS thitruong,
     bu_phongban AS bu_phongban,
     bo_phan_lam_viec,
@@ -20,6 +21,7 @@ WITH src AS (
 
   -- nguồn 2
   SELECT
+   'bangkeluong_miennam'  AS nguondulieu,
     thi_truong AS thitruong,
     bu_pb      AS bu_phongban,
     bo_phan_lam_viec,
@@ -34,10 +36,12 @@ WITH src AS (
     AND thi_truong IS NOT NULL
     AND bu_pb IS NOT NULL
     AND ho_va_ten IS NOT NULL
+    AND bo_phan_lam_viec <> 'Quản lý thị trường Global'
 ),
 
 unpivot_cost AS (
   SELECT
+   nguondulieu,
     thitruong,
     bu_phongban,
     bo_phan_lam_viec,
@@ -57,6 +61,7 @@ unpivot_cost AS (
 )
 
 SELECT
+nguondulieu,
   thitruong,
   bu_phongban,
   bo_phan_lam_viec,
@@ -86,7 +91,8 @@ SELECT
       'Booking KOL',
       'Video Producer',
       'Kỹ sư AI',
-      'PR'
+      'PR',
+      'Tư vấn'
     )
       THEN 'CP BÁN HÀNG'
 
@@ -107,7 +113,8 @@ SELECT
       'Booking KOL',
       'Video Producer',
       'Kỹ sư AI',
-      'PR'
+      'PR',
+       'Tư vấn'
     )
       THEN 'Lương Khối Kinh doanh BU'
 
