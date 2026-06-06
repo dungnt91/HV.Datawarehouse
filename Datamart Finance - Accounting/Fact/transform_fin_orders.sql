@@ -1,330 +1,453 @@
-WITH Params AS (
-  SELECT DATE '2025-10-01' AS FromDate
+CREATE OR REPLACE TABLE `hv-data.hv_fin.fin_orders`
+AS (
+
+/*
+================================================================================
+  BÁO CÁO DOANH THU & CHI PHÍ ĐƠN HÀNG
+  Mục tiêu : Cung cấp dữ liệu P&L theo ngày, thị trường, BU, sub_brand
+  Phạm vi  : Đơn hàng từ ngày from_date trở đi (cả portal lẫn pancake_pos)
+  Tác giả  : Lê Xuân Quỳnh - IT Business Analyst - Phòng Công nghệ
+  Lưu ý   : Mọi số tiền đã quy đổi sang USD theo tỷ giá tại ngày tạo đơn.
+             Riêng VN chia thêm 1.08 để loại VAT khỏi doanh số.
+================================================================================
+*/
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 0. CONFIG TẬP TRUNG
+-- ─────────────────────────────────────────────────────────────────────────────
+WITH cfg AS (
+  SELECT
+    DATE '2025-10-01'                              AS from_date,
+    [4,5,7,10,11,12,13,29,30,32,36,37]            AS valid_bu_ids,
+    [4,5,7,10,11,12,13,29,30,32,36,37,14,23,26]   AS lost_parcel_bu_ids
 ),
 
-Orders AS (
-  SELECT
-      order_id,
-      created_order,
-      delivery_success_date,
-      payment_confirmed_date,
-      stock_in_void_date,
-      return_processed_date,
-      country_id,
-      bu_id,
-      project_id,
-      status_id,
-      order_type,
-      net_amount,
-      total_cogs,
-      other_income_refund,
-      marketplace_return_fee,
-      marketplace_service_fee,
-      marketplace_transaction_fee,
-      marketplace_admin_fee,
-      marketplace_affiliate_fee,
-      marketplace_shipping_fee,
-      marketplace_tax_fee,
-      marketplace_other_fee,
-      shipment_shipping_fee,
-      shipment_return_fee,
-      shipment_cod_fee,
-      shipment_cod_vat_amount,
-      external_marketing_other_fee
-  FROM `hv-data.a_dwh.FactOrder` o
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 1. METRIC LABEL LOOKUP
+-- ─────────────────────────────────────────────────────────────────────────────
+metric_label_lookup AS (
+  SELECT metric, status_condition, use_order_type_as_chitiet, chitiet, nhom, danhmuc
+  FROM UNNEST([
+    STRUCT('CountOrders'                    AS metric, 'any'           AS status_condition, TRUE  AS use_order_type_as_chitiet, ''                                  AS chitiet, 'Số lượng đơn hàng'                   AS nhom, 'ĐƠN HÀNG'          AS danhmuc),
+    STRUCT('GrossAmount'                    , 'any'           , TRUE  , ''                                  , 'Doanh số đến từ việc bán hàng'       , 'DOANH SỐ'          ),
+    STRUCT('Deductions'                     , 'returned'      , TRUE  , ''                                  , 'Đơn hàng hoàn'                       , 'GIẢM TRỪ'          ),
+    STRUCT('Deductions'                     , 'cancelled'     , TRUE  , ''                                  , 'Đơn hàng huỷ'                        , 'GIẢM TRỪ'          ),
+    STRUCT('DiscountAmount'                 , 'any'           , TRUE  , ''                                  , 'Khoản chiết khấu thương mại'         , 'GIẢM TRỪ'          ),
+    STRUCT('NetAmount'                      , 'delivered'     , TRUE  , ''                                  , 'Doanh thu từ bán hàng trực tiếp'     , 'DOANH THU'         ),
+    STRUCT('NetAmount'                      , 'pending'       , TRUE  , ''                                  , 'Doanh thu đang xử lý'                , 'DOANH THU'         ),
+    STRUCT('ReturnDiscount'                 , 'any'           , FALSE , 'Hoàn từ sàn/đơn vị vận chuyển'    , 'Thu nhập khác'                       , 'DOANH THU'         ),
+    STRUCT('Cost'                           , 'any'           , TRUE  , ''                                  , 'Giá vốn hàng bán'                    , 'GIÁ VỐN HÀNG BÁN' ),
+    STRUCT('LostParcelCost'                 , 'any'           , FALSE , 'Tiền hàng hủy/hết hạn'            , 'Chi phí hủy hàng/hết hạn'            , 'PHÍ DỰ PHÒNG DN'   ),
+    STRUCT('PlatformServiceFee'             , 'active'        , FALSE , 'Phí dịch vụ'                      , 'Phí sàn & marketing sàn'             , 'CP BÁN HÀNG'       ),
+    STRUCT('PlatformTransactionFee'         , 'active'        , FALSE , 'Phí thanh toán'                   , 'Phí sàn & marketing sàn'             , 'CP BÁN HÀNG'       ),
+    STRUCT('PlatformFee'                    , 'active'        , FALSE , 'Phí quản lý sàn'                  , 'Phí sàn & marketing sàn'             , 'CP BÁN HÀNG'       ),
+    STRUCT('PlatformAffiliateCommissionFee' , 'active'        , FALSE , 'Affiliate/Hoa hồng giới thiệu'    , 'Phí sàn & marketing sàn'             , 'CP BÁN HÀNG'       ),
+    STRUCT('PlatformShippingFee'            , 'active'        , FALSE , 'Phí vận chuyển của sàn'           , 'Phí sàn & marketing sàn'             , 'CP BÁN HÀNG'       ),
+    STRUCT('PlatformTaxFee'                 , 'active'        , FALSE , 'Phí thuế sàn'                     , 'Phí sàn & marketing sàn'             , 'CP BÁN HÀNG'       ),
+    STRUCT('PlatformOtherFee'               , 'active'        , FALSE , 'Phí sàn & marketing sàn khác'     , 'Phí sàn & marketing sàn'             , 'CP BÁN HÀNG'       ),
+    STRUCT('TotalShippingFee'               , 'active'        , FALSE , 'Phí vận chuyển đến khách hàng'    , 'Chi phí Logistics đến Khách hàng'    , 'CP BÁN HÀNG'       ),
+    STRUCT('ShippingFeeReturn'              , 'active'        , FALSE , 'Chi phí hoàn hàng'                , 'Chi phí Logistics đến Khách hàng'    , 'CP BÁN HÀNG'       ),
+    STRUCT('ExternalMarketingOtherFee'      , 'active'        , FALSE , 'Chi phí marketing ngoài sàn khác' , 'Chi phí marketing ngoài sàn'         , 'CP BÁN HÀNG'       ),
+    STRUCT('PlatformServiceFee'             , 'cancelled_fee' , FALSE , 'Phí dịch vụ'                      , 'Phí sàn & marketing sàn'             , 'PHÍ DỰ PHÒNG DN'   ),
+    STRUCT('PlatformTransactionFee'         , 'cancelled_fee' , FALSE , 'Phí thanh toán'                   , 'Phí sàn & marketing sàn'             , 'PHÍ DỰ PHÒNG DN'   ),
+    STRUCT('PlatformFee'                    , 'cancelled_fee' , FALSE , 'Phí quản lý sàn'                  , 'Phí sàn & marketing sàn'             , 'PHÍ DỰ PHÒNG DN'   ),
+    STRUCT('PlatformAffiliateCommissionFee' , 'cancelled_fee' , FALSE , 'Affiliate/Hoa hồng giới thiệu'    , 'Phí sàn & marketing sàn'             , 'PHÍ DỰ PHÒNG DN'   ),
+    STRUCT('PlatformShippingFee'            , 'cancelled_fee' , FALSE , 'Phí vận chuyển của sàn'           , 'Phí sàn & marketing sàn'             , 'PHÍ DỰ PHÒNG DN'   ),
+    STRUCT('PlatformTaxFee'                 , 'cancelled_fee' , FALSE , 'Phí thuế sàn'                     , 'Phí sàn & marketing sàn'             , 'PHÍ DỰ PHÒNG DN'   ),
+    STRUCT('PlatformOtherFee'               , 'cancelled_fee' , FALSE , 'Phí sàn & marketing sàn khác'     , 'Phí sàn & marketing sàn'             , 'PHÍ DỰ PHÒNG DN'   ),
+    STRUCT('TotalShippingFee'               , 'cancelled_fee' , FALSE , 'Phí vận chuyển đến khách hàng'    , 'Chi phí Logistics đến Khách hàng'    , 'PHÍ DỰ PHÒNG DN'   ),
+    STRUCT('ShippingFeeReturn'              , 'cancelled_fee' , FALSE , 'Chi phí hoàn hàng'                , 'Chi phí Logistics đến Khách hàng'    , 'PHÍ DỰ PHÒNG DN'   ),
+    STRUCT('ExternalMarketingOtherFee'      , 'cancelled_fee' , FALSE , 'Chi phí marketing ngoài sàn khác' , 'Chi phí marketing ngoài sàn'         , 'PHÍ DỰ PHÒNG DN'   )
+  ])
 ),
 
-Dates AS (
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 2. SUB-BRAND CHÍNH CHO TỪNG ĐƠN PANCAKE
+-- ─────────────────────────────────────────────────────────────────────────────
+pancake_order_dominant_brand AS (
   SELECT
-    o.order_id,
-    NULLIF(DATE(o.created_order), DATE '1900-01-01') AS CreatedOrder,
+    ol.order_key,
+    p.sub_brand
+  FROM `hv-data.a_dwh_pancake.FactOrderLine` ol
+  JOIN `hv-data.a_dwh_pancake.DimProduct`    p  ON ol.sku_id = p.sku_id
+  WHERE p.sub_brand IN ('LumiABERA', "MEN'S ABERA", "Perle d'ABERA", 'DermABERA')
+  GROUP BY ol.order_key, p.sub_brand
+  QUALIFY
+    ROW_NUMBER() OVER (
+      PARTITION BY ol.order_key
+      ORDER BY SUM(ol.allocation_rate) DESC
+    ) = 1
+),
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 3. CHUẨN HOÁ ĐƠN HÀNG TỪ HAI NGUỒN
+-- ─────────────────────────────────────────────────────────────────────────────
+stg_orders AS (
+
+  -- 3a. PORTAL
+  SELECT
+    'portal'                 AS nguondulieu,
+    CAST(order_id AS STRING) AS order_id,
+    created_order,
+    stock_in_void_date,
+    return_processed_date,
     CASE
-      WHEN NULLIF(DATE(o.delivery_success_date), DATE '1900-01-01') IS NULL
-       AND NULLIF(DATE(o.payment_confirmed_date),        DATE '1900-01-01') IS NOT NULL
-      THEN NULLIF(DATE(o.payment_confirmed_date),        DATE '1900-01-01')
-      ELSE NULLIF(DATE(o.delivery_success_date), DATE '1900-01-01')
-    END AS success_delivery_date
-  FROM Orders o
+      WHEN project_id = 39 THEN 1
+      WHEN project_id = 40 THEN 11
+      ELSE country_id
+    END                      AS country_id,
+    CASE
+      WHEN marketer = 'hoang.xuan.chinh'
+        THEN IF(created_order < '2026-01-01', bu_id, 4)
+      WHEN marketer = 'bichthuy.huynh' THEN 36
+      WHEN project_id = 8              THEN 4
+      WHEN project_id = 5              THEN 5
+      ELSE bu_id
+    END                      AS bu_id,
+    'NULL'                   AS sub_brand,
+    project_id,
+    status_id,
+    order_type,
+    net_amount,
+    0                        AS aggregate_discount,
+    total_cogs,
+    other_income_refund,
+    marketplace_return_fee,
+    marketplace_service_fee,
+    marketplace_transaction_fee,
+    marketplace_admin_fee,
+    marketplace_affiliate_fee,
+    marketplace_shipping_fee,
+    marketplace_tax_fee,
+    marketplace_other_fee,
+    shipment_shipping_fee,
+    shipment_return_fee,
+    shipment_cod_fee,
+    shipment_cod_vat_amount,
+    external_marketing_other_fee,
+    CASE
+      WHEN NULLIF(DATE(delivery_success_date), DATE '1900-01-01') IS NOT NULL THEN TRUE
+      WHEN NULLIF(DATE(payment_confirmed_date), DATE '1900-01-01') IS NOT NULL THEN TRUE
+      ELSE FALSE
+    END AS was_delivered
+  FROM `hv-data.a_dwh.FactOrder` o
+  WHERE NOT EXISTS (
+    SELECT 1
+    FROM `hv-data.hvnet_products_dwh.a_orders_deleted` del
+    WHERE del.OrderId = o.order_id
+  )
+
+  UNION ALL
+
+  -- 3b. PANCAKE POS
+  SELECT
+    'pancake_pos'              AS nguondulieu,
+    CAST(o.order_id AS STRING) AS order_id,
+    COALESCE(confirmed_date, created_date)  AS created_order,
+    DATE '1900-01-01'                       AS stock_in_void_date,
+    returned_date                           AS return_processed_date,
+    m.ExternalId                            AS country_id,
+    CASE o.external_shop_id
+      WHEN '1942976467' THEN org.ExternalId
+      WHEN '1942946009' THEN 11
+      WHEN '1943014207' THEN 7
+    END                                     AS bu_id,
+    sb.sub_brand,
+    CASE o.external_shop_id
+      WHEN '1942976467' THEN 5
+      WHEN '1942946009' THEN 10
+      WHEN '1943014207' THEN 9
+    END                                     AS project_id,
+    CASE o.status_id
+      WHEN 1  THEN 1  WHEN 11 THEN 1  WHEN 12 THEN 1 WHEN 17 THEN 1
+      WHEN 8  THEN 2  WHEN 9  THEN 2
+      WHEN 2  THEN 3
+      WHEN 3  THEN 4  WHEN 16 THEN 4
+      WHEN 4  THEN 5
+      WHEN 5  THEN 7  WHEN 15 THEN 7
+    END                                     AS status_id,
+    CASE WHEN o.sales_platform IN ('TikTok', 'Shopee') THEN 2 ELSE 1
+    END                                     AS order_type,
+    SAFE_CAST(COALESCE(total_price,0) + COALESCE(shipping_fee_customer,0) + COALESCE(surcharge_amount,0) AS FLOAT64)         AS net_amount,
+    SAFE_CAST(COALESCE(total_discount,0) + COALESCE(total_items_discount,0) - COALESCE(platform_subsidy,0) AS FLOAT64)       AS aggregate_discount,
+    SAFE_CAST(COALESCE(product_cogs,0) + COALESCE(gift_cogs,0) AS FLOAT64)                                                   AS total_cogs,
+    0                                                                                                                         AS other_income_refund,
+    0                                                                                                                         AS marketplace_return_fee,
+    COALESCE(SAFE_CAST(af_service_fee AS FLOAT64), 0)                                                                        AS marketplace_service_fee,
+    SAFE_CAST(COALESCE(af_payment_fee,0) + COALESCE(af_seller_transaction_fee,0) AS FLOAT64)                                 AS marketplace_transaction_fee,
+    COALESCE(SAFE_CAST(af_commission_fee AS FLOAT64), 0)                                                                     AS marketplace_admin_fee,
+    COALESCE(SAFE_CAST(af_affiliate_commission AS FLOAT64), 0)                                                               AS marketplace_affiliate_fee,
+    COALESCE(SAFE_CAST(af_shipping_fee_amount AS FLOAT64), 0)                                                                AS marketplace_shipping_fee,
+    SAFE_CAST(COALESCE(af_isr_income_tax_amount,0) + COALESCE(af_iva_vat_amount,0) + COALESCE(af_tax,0) AS FLOAT64)         AS marketplace_tax_fee,
+    fee_marketplace - (
+        COALESCE(SAFE_CAST(af_service_fee AS FLOAT64), 0)
+      + SAFE_CAST(COALESCE(af_payment_fee,0) + COALESCE(af_seller_transaction_fee,0) AS FLOAT64)
+      + COALESCE(SAFE_CAST(af_commission_fee AS FLOAT64), 0)
+      + COALESCE(SAFE_CAST(af_affiliate_commission AS FLOAT64), 0)
+      + COALESCE(SAFE_CAST(af_shipping_fee_amount AS FLOAT64), 0)
+      + SAFE_CAST(COALESCE(af_isr_income_tax_amount,0) + COALESCE(af_iva_vat_amount,0) + COALESCE(af_tax,0) AS FLOAT64)
+      + COALESCE(SAFE_CAST(af_marketplace_other_fee AS FLOAT64), 0)
+    )                                                                                                                         AS marketplace_other_fee,
+    COALESCE(SAFE_CAST(partner_fee AS FLOAT64), 0)                                                                           AS shipment_shipping_fee,
+    0  AS shipment_return_fee,
+    0  AS shipment_cod_fee,
+    0  AS shipment_cod_vat_amount,
+    0  AS external_marketing_other_fee,
+    CASE
+      WHEN NULLIF(DATE(received_date),   DATE '1900-01-01') IS NOT NULL THEN TRUE
+      WHEN NULLIF(DATE(reconciled_date), DATE '1900-01-01') IS NOT NULL THEN TRUE
+      ELSE FALSE
+    END AS was_delivered
+
+  FROM `hv-data.a_dwh_pancake.FactOrder`          o
+  -- Shop/market chưa có trong MDM không nên drop đơn
+  LEFT JOIN `hv-data.mdm_prod_dwh.shops`          s   ON o.external_shop_id  = s.ExternalShopId
+  LEFT JOIN `hv-data.mdm_prod_dwh.markets`        m   ON s.MarketId          = m.Id
+  LEFT JOIN `hv-data.a_dwh_pancake.DimEmployee`   e   ON o.marketer_id       = e.external_employee_id
+  LEFT JOIN `hv-data.mdm_prod_dwh.org_units`      org ON org.Type = 3 AND e.bu = org.Code
+  LEFT JOIN pancake_order_dominant_brand           sb  ON o.order_key         = sb.order_key
+  WHERE o.status_id NOT IN (0, 6, 7)
 ),
 
-Rates AS (
-   SELECT
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 4. TỶ GIÁ QUY ĐỔI
+-- ─────────────────────────────────────────────────────────────────────────────
+order_fx_rate AS (
+  SELECT
     o.order_id,
-    COALESCE(ex.base_fx_rate, 1) AS rate
-  FROM Orders o
-  JOIN Dates d ON d.order_id = o.order_id
-  LEFT JOIN `hv-data.a_dwh.DimExchangeRate`  ex
-    ON ex.project_id = o.project_id
-   AND CAST(ex.exchange_key AS STRING) = FORMAT_DATE('%Y%m%d', d.CreatedOrder)
+    COALESCE(ex.base_fx_rate, 1) AS fx_rate
+  FROM stg_orders  o
+  LEFT JOIN `hv-data.a_dwh.DimExchangeRate` ex
+    ON  ex.project_id  = o.project_id
+    AND CAST(ex.exchange_key AS STRING) = FORMAT_DATE('%Y%m%d', o.created_order)
 ),
 
-StatusLogic AS (
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 5. PHÂN LOẠI TRẠNG THÁI ĐƠN
+-- ─────────────────────────────────────────────────────────────────────────────
+order_status_classification AS (
   SELECT
     o.order_id,
     o.status_id,
+    o.status_id IN (1, 2, 3, 4) AS is_active,
+    o.status_id IN (5, 7)       AS is_cancelled_or_returned,
     CASE
-      WHEN CAST(o.status_id AS STRING) NOT IN ('5','7') THEN ''
-      ELSE
-        CASE
-          WHEN d.success_delivery_date IS NOT NULL AND o.stock_in_void_date IS NOT NULL THEN 'Hoàn'
-          ELSE 'Hủy'
-        END
-    END AS order_status,
-    CASE CAST(o.status_id AS STRING)
-      WHEN '1' THEN 'Mới'
-      WHEN '2' THEN 'Đang gói hàng'
-      WHEN '3' THEN 'Đang giao hàng'
-      WHEN '4' THEN 'Giao thành công'
-      WHEN '5' THEN 'Hủy chưa trả hàng'
-      WHEN '7' THEN 'Hủy đã trả hàng'
-      ELSE 'Không xác định'
-    END AS StatusValueText
-  FROM Orders o
-  JOIN Dates d ON o.order_id = d.order_id
+      WHEN o.status_id IN (5, 7) AND o.was_delivered AND o.stock_in_void_date IS NOT NULL
+        THEN 'Hoàn'
+      WHEN o.status_id IN (5, 7) THEN 'Hủy'
+      WHEN o.status_id = 1       THEN 'Mới'
+      WHEN o.status_id = 2       THEN 'Đang gói hàng'
+      WHEN o.status_id = 3       THEN 'Đang giao hàng'
+      WHEN o.status_id = 4       THEN 'Giao thành công'
+      ELSE                            'Không xác định'
+    END AS display_status
+  FROM stg_orders o
 ),
 
-/* =========================
-   1) BaseData: số liệu theo CreatedOrder
-      - Cost CHỈ cho status 1,2,3,4
-      - KHÔNG join LostParcel ở đây
-   ========================= */
-BaseData AS (
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 6. BASE METRICS
+-- ─────────────────────────────────────────────────────────────────────────────
+base_metrics AS (
   SELECT
-    c.CountryCode AS thitruong,
-    bu.name AS bu_phongban,
+    o.nguondulieu,
+    c.CountryCode                                              AS market,
+    bu.name                                                    AS business_unit,
+    o.sub_brand,
     o.order_type,
-    IF(o.order_type = 2, 'Sàn TMĐT', 'Kênh bán hàng khác') AS OrderTypeLabel,
-
-    CASE
-      WHEN s.order_status IN ('Hủy', 'Hoàn') THEN s.order_status
-      ELSE s.StatusValueText
-    END AS status,
-
-    FORMAT_DATE('%Y-%m', d.CreatedOrder) AS thang,
-    d.CreatedOrder AS ngay,
+    IF(o.order_type = 2, 'Sàn TMĐT', 'Kênh bán hàng khác')   AS order_type_label,
+    sc.display_status,
+    FORMAT_DATE('%Y-%m', o.created_order)                       AS month_key,
+    o.created_order                                             AS order_date,
+    sc.is_active,
+    sc.is_cancelled_or_returned,
 
     COUNT(o.order_id) AS CountOrders,
 
-    CAST(
-      IF(c.CountryCode = 'VN',
-         SUM(o.net_amount * r.rate) / 1.08,
-         SUM(o.net_amount * r.rate)
-      ) AS INT64
-    ) AS GrossAmount,
+    CAST(IF(c.CountryCode = 'VN',
+            SUM(o.net_amount * r.fx_rate) / 1.08,
+            SUM(o.net_amount * r.fx_rate))
+    AS INT64) AS GrossAmount,
 
-    CAST(
-      CASE WHEN s.StatusValueText IN ('Hủy chưa trả hàng','Hủy đã trả hàng')
-      THEN 
-        (IF(c.CountryCode = 'VN',
-          SUM(o.net_amount * r.rate) / 1.08,
-          SUM(o.net_amount * r.rate)
-        ))
-      ELSE 0 END AS INT64
-    ) AS Deductions,
+    CAST(CASE WHEN sc.is_cancelled_or_returned
+           THEN IF(c.CountryCode = 'VN',
+                   SUM(o.net_amount * r.fx_rate) / 1.08,
+                   SUM(o.net_amount * r.fx_rate))
+           ELSE 0 END
+    AS INT64) AS Deductions,
 
-    CAST(
-      CASE WHEN s.StatusValueText IN ('Mới','Đang gói hàng','Đang giao hàng','Giao thành công')
-      THEN 
-        (IF(c.CountryCode = 'VN',
-          SUM(o.net_amount * r.rate) / 1.08,
-          SUM(o.net_amount * r.rate)
-        ))
-      ELSE 0 END AS INT64
-    ) AS NetAmount,
+    CAST(CASE WHEN sc.is_active
+           THEN IF(c.CountryCode = 'VN',
+                   SUM((o.net_amount - o.aggregate_discount) * r.fx_rate) / 1.08,
+                   SUM((o.net_amount - o.aggregate_discount) * r.fx_rate))
+           ELSE 0 END
+    AS INT64) AS NetAmount,
 
-    -- ✅ Cost chỉ dành cho đơn 1,2,3,4 (giá vốn hàng bán)
-    CAST(
-      CASE
-        WHEN CAST(o.status_id AS STRING) IN ('1','2','3','4')
-        THEN SUM(o.total_cogs * r.rate)
-        ELSE NULL
-      END AS INT64
-    ) AS Cost,
+    CAST(CASE WHEN sc.is_active
+           THEN IF(c.CountryCode = 'VN',
+                   SUM(o.aggregate_discount * r.fx_rate) / 1.08,
+                   SUM(o.aggregate_discount * r.fx_rate))
+           ELSE 0 END
+    AS INT64) AS DiscountAmount,
 
-    CAST(SUM(o.other_income_refund * r.rate) AS INT64) AS ReturnDiscount,
-    CAST(SUM(o.marketplace_service_fee * r.rate) AS INT64) AS PlatformServiceFee,
-    CAST(SUM(o.marketplace_transaction_fee
- * r.rate) AS INT64) AS PlatformTransactionFee,
-    CAST(SUM(o.marketplace_admin_fee * r.rate) AS INT64) AS PlatformFee,
-    CAST(SUM(o.marketplace_affiliate_fee * r.rate) AS INT64) AS PlatformAffiliateCommissionFee,
-    CAST(SUM((o.marketplace_shipping_fee + o.marketplace_return_fee) * r.rate) AS INT64) AS PlatformShippingFee,
-    CAST(SUM(o.marketplace_tax_fee * r.rate) AS INT64) AS PlatformTaxFee,
-    CAST(SUM(o.marketplace_other_fee * r.rate) AS INT64) AS PlatformOtherFee,
-    CAST(SUM((o.shipment_shipping_fee + o.shipment_cod_fee + o.shipment_cod_vat_amount) * r.rate) AS INT64) AS TotalShippingFee,
-    CAST(SUM(o.shipment_return_fee * r.rate) AS INT64) AS ShippingFeeReturn,
-    CAST(SUM(o.external_marketing_other_fee * r.rate) AS INT64) AS ExternalMarketingOtherFee
-  FROM Orders o
-  JOIN Dates d ON o.order_id = d.order_id
-  JOIN Rates r ON o.order_id = r.order_id
-  JOIN StatusLogic s ON o.order_id = s.order_id
-  JOIN `hv-data.hvnet_products_dwh.us_countries` c ON c.CountryId = o.country_id
-  JOIN `hv-data.hvnet_products_dwh.us_bussiness_units` bu ON bu.Id = o.bu_id
-  WHERE d.CreatedOrder >= (SELECT FromDate FROM Params)
-    AND o.bu_id IN (4,5,7,10,11,12,13,29,30,32,36,37)
-  GROUP BY thitruong, bu_phongban, o.order_type, OrderTypeLabel, status, thang, ngay, o.status_id, s.StatusValueText
+    CAST(CASE WHEN sc.is_active
+           THEN SUM(o.total_cogs * r.fx_rate)
+           ELSE NULL END
+    AS INT64) AS Cost,
+
+    CAST(SUM(o.other_income_refund             * r.fx_rate) AS INT64) AS ReturnDiscount,
+    CAST(SUM(o.marketplace_service_fee          * r.fx_rate) AS INT64) AS PlatformServiceFee,
+    CAST(SUM(o.marketplace_transaction_fee      * r.fx_rate) AS INT64) AS PlatformTransactionFee,
+    CAST(SUM(o.marketplace_admin_fee            * r.fx_rate) AS INT64) AS PlatformFee,
+    CAST(SUM(o.marketplace_affiliate_fee        * r.fx_rate) AS INT64) AS PlatformAffiliateCommissionFee,
+    CAST(SUM((o.marketplace_shipping_fee
+             + o.marketplace_return_fee)         * r.fx_rate) AS INT64) AS PlatformShippingFee,
+    CAST(SUM(o.marketplace_tax_fee              * r.fx_rate) AS INT64) AS PlatformTaxFee,
+    CAST(SUM(o.marketplace_other_fee            * r.fx_rate) AS INT64) AS PlatformOtherFee,
+    CAST(SUM((o.shipment_shipping_fee
+             + o.shipment_cod_fee
+             + o.shipment_cod_vat_amount)        * r.fx_rate) AS INT64) AS TotalShippingFee,
+    CAST(SUM(o.shipment_return_fee              * r.fx_rate) AS INT64) AS ShippingFeeReturn,
+    CAST(SUM(o.external_marketing_other_fee     * r.fx_rate) AS INT64) AS ExternalMarketingOtherFee
+
+  FROM stg_orders                                        o
+  LEFT JOIN order_fx_rate                                     r   ON r.order_id  = o.order_id
+  LEFT JOIN order_status_classification                       sc  ON sc.order_id = o.order_id
+  --  Đổi INNER → LEFT: country/BU chưa map không nên drop đơn khỏi báo cáo
+  LEFT JOIN `hv-data.hvnet_products_dwh.us_countries`       c   ON c.CountryId = o.country_id
+  LEFT JOIN `hv-data.hvnet_products_dwh.us_bussiness_units` bu  ON bu.Id       = o.bu_id
+  CROSS JOIN cfg
+
+  WHERE o.created_order >= cfg.from_date
+    AND o.bu_id IN UNNEST(cfg.valid_bu_ids)
+
+  GROUP BY
+    o.nguondulieu, market, business_unit, o.sub_brand,
+    o.order_type, order_type_label,
+    sc.display_status,
+    month_key, order_date,
+    sc.is_active,
+    sc.is_cancelled_or_returned
 ),
 
-/* =========================
-   2) LostParcel: nguồn riêng
-      - CHỈ StatusValue = 7
-      - tháng theo ReturnDateKey (chuẩn)
-   ========================= */
-LostParcelAgg AS (
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 7. LOST PARCEL COST
+-- ─────────────────────────────────────────────────────────────────────────────
+lost_parcel_cost AS (
   SELECT
-    ctr.CountryCode AS thitruong,
-    bu.name         AS bu_phongban,
-    ord.order_type,
-    IF(ord.order_type = 2, 'Sàn TMĐT', 'Kênh bán hàng khác') AS OrderTypeLabel,
-
-    -- LostParcel là tiền huỷ hàng/hết hạn -> bạn muốn gom vào dự phòng DN
-    'Hủy' AS status,
-
-    FORMAT_DATE('%Y-%m', ord.return_processed_date) AS thang,
-    ord.return_processed_date AS ngay,
-
-    CAST(SUM(ord.total_cogs * COALESCE(ce.exchange_rate, 1)) AS INT64) AS LostParcelCost
-  FROM Orders ord
-  JOIN Params p ON TRUE
-  LEFT JOIN `hv-data.hvnet_products_dwh.us_bussiness_units` bu
-    ON bu.Id = ord.bu_id
-  LEFT JOIN `hv-data.hvnet_products_dwh.us_countries` ctr
-    ON ctr.CountryId = ord.country_id
+    o.nguondulieu,
+    ctr.CountryCode                                            AS market,
+    bu.name                                                    AS business_unit,
+    'NULL'                                                     AS sub_brand,
+    o.order_type,
+    IF(o.order_type = 2, 'Sàn TMĐT', 'Kênh bán hàng khác')   AS order_type_label,
+    'Hủy'                                                      AS display_status,
+    FORMAT_DATE('%Y-%m', o.return_processed_date)              AS month_key,
+    o.return_processed_date                                    AS order_date,
+    CAST(SUM(o.total_cogs * COALESCE(ce.exchange_rate, 1)) AS INT64) AS LostParcelCost
+  FROM stg_orders                                                            o
+  CROSS JOIN cfg
+  LEFT JOIN `hv-data.hvnet_products_dwh.us_bussiness_units`                 bu  ON bu.Id         = o.bu_id
+  LEFT JOIN `hv-data.hvnet_products_dwh.us_countries`                       ctr ON ctr.CountryId = o.country_id
   LEFT JOIN `hv-data.hvnet_products_dwh.Currency_Exchange_currency_exchange` ce
-    ON ce.ProjectId = ord.project_id
-   AND SAFE.PARSE_DATE('%Y%m%d', CAST(ce.DateKey AS STRING))   = ord.return_processed_date
-  WHERE ord.return_processed_date >= p.FromDate
-    AND CAST(ord.status_id AS STRING) = '7'
-    AND ord.bu_id IN (4,5,7,10,11,12,13,29,30,32,36,37,14,23,26)
+    ON  ce.ProjectId = o.project_id
+    AND SAFE.PARSE_DATE('%Y%m%d', CAST(ce.DateKey AS STRING)) = o.return_processed_date
+  WHERE o.return_processed_date >= cfg.from_date
+    AND o.status_id              = 7
+    AND o.bu_id IN UNNEST(cfg.lost_parcel_bu_ids)
     AND EXISTS (
       SELECT 1
       FROM `hv-data.hvnet_products_dwh.wh_warehouses_stocks` w
-      WHERE w.ProjectId     = ord.project_id
-        AND w.InventoryId   = ord.order_id
-        AND w.InventoryType = 'LostParcel'
+      WHERE w.ProjectId    = o.project_id
+        AND CAST(w.InventoryId AS STRING) = o.order_id
+        AND w.InventoryType  = 'LostParcel'
     )
-  GROUP BY thitruong, bu_phongban, ord.order_type, OrderTypeLabel, status, thang, ngay
+  GROUP BY
+    o.nguondulieu, market, business_unit, o.sub_brand,
+    o.order_type, order_type_label, display_status,
+    month_key, order_date
 ),
 
-/* =========================
-   3) Unpivot 2 nguồn rồi UNION ALL
-   ========================= */
-AllMetrics AS (
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 8. UNPIVOT WIDE → LONG
+-- ─────────────────────────────────────────────────────────────────────────────
+all_metrics_long AS (
   SELECT
-    thitruong, bu_phongban, OrderTypeLabel, status, thang, ngay,
-    Metric, Value
-  FROM BaseData
+    nguondulieu, market, business_unit, sub_brand,
+    order_type_label, display_status, month_key, order_date,
+    metric, value
+  FROM base_metrics
   UNPIVOT (
-    Value FOR Metric IN (
-      CountOrders,
-      GrossAmount,
-      NetAmount,
-      Deductions,
-      Cost,
-      ReturnDiscount,
-      PlatformServiceFee,
-      PlatformTransactionFee,
-      PlatformFee,
-      PlatformAffiliateCommissionFee,
-      PlatformShippingFee,
-      PlatformTaxFee,
-      PlatformOtherFee,
-      TotalShippingFee,
-      ShippingFeeReturn,
-      ExternalMarketingOtherFee
+    value FOR metric IN (
+      CountOrders, GrossAmount, NetAmount, Deductions, DiscountAmount, Cost,
+      ReturnDiscount, PlatformServiceFee, PlatformTransactionFee, PlatformFee,
+      PlatformAffiliateCommissionFee, PlatformShippingFee, PlatformTaxFee,
+      PlatformOtherFee, TotalShippingFee, ShippingFeeReturn, ExternalMarketingOtherFee
     )
   )
 
   UNION ALL
 
   SELECT
-    thitruong, bu_phongban, OrderTypeLabel, status, thang, ngay,
-    Metric, Value
-  FROM LostParcelAgg
-  UNPIVOT (
-    Value FOR Metric IN (LostParcelCost)
-  )
+    nguondulieu, market, business_unit, sub_brand,
+    order_type_label, display_status, month_key, order_date,
+    metric, value
+  FROM lost_parcel_cost
+  UNPIVOT (value FOR metric IN (LostParcelCost))
+),
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 9. GẮN STATUS_CONDITION
+-- ─────────────────────────────────────────────────────────────────────────────
+metrics_with_condition AS (
+  SELECT
+    *,
+    CASE
+      WHEN display_status IN ('Hoàn', 'Hủy')                           THEN 'cancelled_fee'
+      WHEN display_status = 'Giao thành công'                           THEN 'delivered'
+      WHEN display_status IN ('Mới', 'Đang gói hàng', 'Đang giao hàng') THEN 'pending'
+      ELSE 'any'
+    END AS row_status_condition
+  FROM all_metrics_long
 )
 
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 10. OUTPUT CUỐI
+-- ─────────────────────────────────────────────────────────────────────────────
 SELECT
-  thitruong,
-  bu_phongban,
-  OrderTypeLabel,
-  status,
-  thang,
-  ngay,
-  Metric,
-  Value AS amount,
+  m.nguondulieu,
+  m.market           AS thitruong,
+  m.business_unit    AS bu_phongban,
+  'NULL'             AS sub_bu,
+  m.sub_brand,
+  m.order_type_label AS OrderTypeLabel,
+  m.display_status   AS status,
+  m.month_key        AS thang,
+  m.order_date       AS ngay,
+  m.metric           AS Metric,
+  m.value            AS amount,
+  IF(lk.use_order_type_as_chitiet, m.order_type_label, lk.chitiet) AS chitiet,
+  lk.nhom,
+  lk.danhmuc
 
-  -- ============== CHI TIẾT ==============
-  CASE
-    WHEN Metric IN ('CountOrders','GrossAmount','Cost','NetAmount','Deductions') THEN OrderTypeLabel
-    WHEN Metric = 'ReturnDiscount' THEN 'Hoàn từ sàn/đơn vị vận chuyển'
+FROM metrics_with_condition m
+JOIN metric_label_lookup    lk
+  ON  lk.metric = m.metric
+  AND (
+        lk.status_condition = 'any'
+     OR lk.status_condition = m.row_status_condition
+  )
 
-    WHEN Metric = 'LostParcelCost' THEN 'Tiền hàng hủy/hết hạn'
+WHERE m.value <> 0
+ORDER BY thitruong, bu_phongban, thang, Metric, nguondulieu
 
-    WHEN Metric = 'PlatformServiceFee' THEN 'Phí dịch vụ'
-    WHEN Metric = 'PlatformTransactionFee' THEN 'Phí thanh toán'
-    WHEN Metric = 'PlatformFee' THEN 'Phí quản lý sàn'
-    WHEN Metric = 'PlatformAffiliateCommissionFee' THEN 'Affiliate/Hoa hồng giới thiệu'
-    WHEN Metric = 'PlatformShippingFee' THEN 'Phí vận chuyển của sàn'
-    WHEN Metric = 'PlatformTaxFee' THEN 'Phí thuế sàn'
-    WHEN Metric = 'PlatformOtherFee' THEN 'Phí sàn & marketing sàn khác'
-    WHEN Metric = 'TotalShippingFee' THEN 'Phí vận chuyển đến khách hàng'
-    WHEN Metric = 'ShippingFeeReturn' THEN 'Chi phí hoàn hàng'
-    WHEN Metric = 'ExternalMarketingOtherFee' THEN 'Chi phí marketing ngoài sàn khác'
-  END AS chitiet,
-
-  -- ============== NHÓM ==============
-  CASE
-    WHEN Metric = 'CountOrders' THEN 'Số lượng đơn hàng'
-    
-    WHEN Metric = 'GrossAmount' THEN 'Doanh số đến từ việc bán hàng'
-
-    WHEN Metric = 'Deductions' AND status = 'Hoàn' THEN 'Đơn hàng hoàn'
-    WHEN Metric = 'Deductions' AND status = 'Hủy' THEN 'Đơn hàng huỷ'
-
-    WHEN Metric = 'NetAmount' AND status = 'Giao thành công' THEN 'Doanh thu từ bán hàng trực tiếp'
-    WHEN Metric = 'NetAmount' AND status IN ('Mới','Đang gói hàng','Đang giao hàng') THEN 'Doanh thu đang xử lý'
-
-    WHEN Metric = 'ReturnDiscount' THEN 'Thu nhập khác'
-
-    WHEN Metric = 'Cost' THEN 'Giá vốn hàng bán'
-
-    WHEN Metric IN ('LostParcelCost') THEN 'Chi phí hủy hàng/hết hạn'
-
-    WHEN Metric IN ('PlatformServiceFee','PlatformTransactionFee','PlatformFee',
-                    'PlatformAffiliateCommissionFee','PlatformShippingFee',
-                    'PlatformTaxFee','PlatformOtherFee')
-    THEN 'Phí sàn & marketing sàn'
-
-    WHEN Metric IN ('TotalShippingFee','ShippingFeeReturn')
-    THEN 'Chi phí Logistics đến Khách hàng'
-
-    WHEN Metric IN ('ExternalMarketingOtherFee')
-    THEN 'Chi phí marketing ngoài sàn'
-
-  END AS nhom,
-
-  -- ============== DANH MỤC ==============
-  CASE
-    WHEN Metric = 'CountOrders' THEN 'ĐƠN HÀNG'
-    WHEN Metric = 'GrossAmount' THEN 'DOANH SỐ'
-    WHEN Metric = 'Deductions' THEN 'GIẢM TRỪ'
-    WHEN Metric IN ('NetAmount','ReturnDiscount') THEN 'DOANH THU'
-
-    WHEN Metric = 'LostParcelCost' THEN 'PHÍ DỰ PHÒNG DN'
-
-    WHEN Metric = 'Cost' THEN 'GIÁ VỐN HÀNG BÁN'
-
-    WHEN Metric IN ('PlatformServiceFee','PlatformTransactionFee','PlatformFee',
-                    'PlatformAffiliateCommissionFee','PlatformShippingFee',
-                    'PlatformTaxFee','PlatformOtherFee',
-                    'TotalShippingFee','ShippingFeeReturn','ExternalMarketingOtherFee')
-         AND status IN ('Hoàn','Hủy')
-    THEN 'PHÍ DỰ PHÒNG DN'
-    ELSE 'CP BÁN HÀNG'
-  END AS danhmuc
-
-FROM AllMetrics
-WHERE Value <> 0
-ORDER BY thitruong, bu_phongban, thang, Metric
+)
