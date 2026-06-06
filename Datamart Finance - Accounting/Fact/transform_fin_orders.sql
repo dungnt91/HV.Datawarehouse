@@ -6,7 +6,7 @@ AS (
   BÁO CÁO DOANH THU & CHI PHÍ ĐƠN HÀNG
   Mục tiêu : Cung cấp dữ liệu P&L theo ngày, thị trường, BU, sub_brand
   Phạm vi  : Đơn hàng từ ngày from_date trở đi (cả portal lẫn pancake_pos)
-  Tác giả  : Lê Xuân Quỳnh - IT Business Analyst - Phòng Công nghệ
+  Author  : Lê Xuân Quỳnh 
   Lưu ý   : Mọi số tiền đã quy đổi sang USD theo tỷ giá tại ngày tạo đơn.
              Riêng VN chia thêm 1.08 để loại VAT khỏi doanh số.
 ================================================================================
