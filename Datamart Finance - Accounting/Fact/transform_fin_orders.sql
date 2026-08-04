@@ -1,5 +1,4 @@
--- CREATE OR REPLACE TABLE `hv-data.hv_fin.fin_orders`
--- AS (
+-- CREATE OR REPLACE TABLE `hv-data.hv_fin.fin_orders` AS
 
 /*
 ================================================================================
@@ -26,7 +25,7 @@ metric_label_lookup AS (
     STRUCT('GrossAmount'                    , 'any'           , TRUE  , ''                                  , 'Doanh số đến từ việc bán hàng'       , 'DOANH SỐ'          ),
     STRUCT('Deductions'                     , 'returned'      , TRUE  , ''                                  , 'Đơn hàng hoàn'                       , 'GIẢM TRỪ'          ),
     STRUCT('Deductions'                     , 'cancelled'     , TRUE  , ''                                  , 'Đơn hàng huỷ'                        , 'GIẢM TRỪ'          ),
-    STRUCT('DiscountAmount'                 , 'any'           , TRUE  , ''                                  , 'Khoản chiết khấu thương mại'         , 'GIẢM TRỪ'          ),
+    STRUCT('DiscountAmount'                 , 'any'     , TRUE  , ''                                  , 'Khoản chiết khấu thương mại'         , 'GIẢM TRỪ'          ),
     STRUCT('NetAmount'                      , 'delivered'     , TRUE  , ''                                  , 'Doanh thu từ bán hàng trực tiếp'     , 'DOANH THU'         ),
     STRUCT('NetAmount'                      , 'pending'       , TRUE  , ''                                  , 'Doanh thu đang xử lý'                , 'DOANH THU'         ),
     STRUCT('ReturnDiscount'                 , 'any'           , FALSE , 'Hoàn từ sàn/đơn vị vận chuyển'    , 'Thu nhập khác'                       , 'DOANH THU'         ),
@@ -75,6 +74,7 @@ pancake_order_dominant_brand AS (
 ),
 
 
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 3. NGÀY CHỐT ĐƠN PANCAKE (finalized_date)
 --
@@ -100,11 +100,11 @@ pancake_order_dominant_brand AS (
 -- ─────────────────────────────────────────────────────────────────────────────
 pancake_status_fallback AS (
   SELECT
-    order_id,
+    order_key,
     update_date,
     status_id,
     ROW_NUMBER() OVER (
-      PARTITION BY order_id
+      PARTITION BY order_key
       ORDER BY
         -- Nhóm 1: status chốt chính thức, ưu tiên như nhau → lấy update_date sớm nhất
         CASE status_id
@@ -126,15 +126,15 @@ pancake_status_fallback AS (
 
 pancake_order_finalized AS (
   SELECT
-    fo.order_id,
+    fo.order_key,
     DATE(sf.update_date) AS finalized_date
   FROM `hv-data.a_dwh_pancake.FactOrder`  fo
   LEFT JOIN pancake_status_fallback        sf
-    ON  sf.order_id = fo.order_id
+    ON  sf.order_key = fo.order_key
     AND sf.rn = 1
   -- Loại đơn huỷ/nháp và đơn trả hàng chưa từng xác nhận
   WHERE fo.status_id NOT IN (0, 7, 11, 17)
-    AND NOT (fo.status_id = 6 AND fo.confirmed_date IS NULL)
+    AND NOT (fo.status_id = 6 AND fo.confirmed_at_ts IS NULL)
 ),
 
 
@@ -156,9 +156,6 @@ stg_orders AS (
       ELSE country_id
     END                      AS country_id,
     CASE
-      WHEN marketer = 'hoang.xuan.chinh'
-        THEN IF(created_order < '2026-01-01', bu_id, 4)
-      WHEN marketer = 'bichthuy.huynh' THEN 36
       WHEN project_id = 8              THEN 4
       WHEN project_id = 5              THEN 5
       ELSE bu_id
@@ -188,52 +185,40 @@ stg_orders AS (
       WHEN NULLIF(DATE(delivery_success_date), DATE '1900-01-01') IS NOT NULL THEN TRUE
       WHEN NULLIF(DATE(payment_confirmed_date), DATE '1900-01-01') IS NOT NULL THEN TRUE
       ELSE FALSE
-    END AS was_delivered
+    END AS was_delivered,
+    'NULL' AS MarketId
   FROM `hv-data.a_dwh.FactOrder` o
+     CROSS JOIN cfg
   WHERE NOT EXISTS (
     SELECT 1
     FROM `hv-data.hvnet_products_dwh.a_orders_deleted` del
     WHERE del.OrderId = o.order_id
   )
+  AND o.created_order >= cfg.from_date
+  AND o.bu_id IN UNNEST(cfg.valid_bu_ids)
 
   UNION ALL
 
   -- 4b. PANCAKE POS
   --
-  --  created_order = finalized_date từ pancake_order_finalized
-  --
-  --  Lý do KHÔNG dùng confirmed_date nữa:
-  --    confirmed_date là timestamp cập nhật cuối của đơn trong FactOrder,
-  --    có thể bị thay đổi mỗi khi đơn được chỉnh sửa → không đại diện
-  --    cho thời điểm đơn thực sự được chốt.
-  --
-  --  finalized_date = ngày đầu tiên đơn đi qua trạng thái chốt
-  --  trong FactOrderStatusHistory → ổn định, không thay đổi theo thời gian,
-  --  phản ánh đúng kỳ kế toán mà đơn thuộc về.
-  --
-  --  Nếu finalized_date IS NULL → đơn chưa chốt → tự động bị loại
-  --  tại WHERE created_order >= from_date trong base_metrics.
+  
   SELECT
-    'pancake_pos'              AS nguondulieu,
-    CAST(o.order_id AS STRING) AS order_id,
+    CONCAT('pancake_pos_', o.shop_id) AS nguondulieu,
+    CAST(o.order_key AS STRING) AS order_id,
 
-    -- ✅ Dùng finalized_date làm ngày chốt đơn — xem giải thích ở CTE 3
+    -- Dùng finalized_date làm ngày chốt đơn — xem giải thích ở CTE 3
     DATE(pof.finalized_date)   AS created_order,
 
-    DATE '1900-01-01'                       AS stock_in_void_date,
-    returned_date                           AS return_processed_date,
-    m.ExternalId                            AS country_id,
-    CASE o.external_shop_id
-      WHEN '1942976467' THEN org.ExternalId
-      WHEN '1942946009' THEN 11
-      WHEN '1943014207' THEN 7
-    END                                     AS bu_id,
+    DATE(o.shipped_at_ts)                      AS stock_in_void_date,
+    DATE(o.returned_at_ts)                     AS return_processed_date,
+    m.ExternalId                              AS country_id,
+    CASE o.shop_id
+      WHEN 1942976467 THEN org.ExternalId
+      WHEN 1942946009 THEN 11
+      WHEN 1943014207 THEN 7
+    END                                    AS bu_id,
     sb.sub_brand,
-    CASE o.external_shop_id
-      WHEN '1942976467' THEN 5
-      WHEN '1942946009' THEN 10
-      WHEN '1943014207' THEN 9
-    END                                     AS project_id,
+    0 AS project_id,
     CASE o.status_id
       WHEN 1  THEN 1  WHEN 11 THEN 1  WHEN 12 THEN 1  WHEN 17 THEN 1
       WHEN 8  THEN 2  WHEN 9  THEN 2
@@ -242,19 +227,19 @@ stg_orders AS (
       WHEN 4  THEN 5
       WHEN 5  THEN 7  WHEN 15 THEN 7
     END                                     AS status_id,
-    CASE WHEN o.sales_platform IN ('TikTok', 'Shopee') THEN 2 ELSE 1
+    CASE WHEN o.sales_platform IN ('TikTok', 'Shopee', 'Lazada') THEN 2 ELSE 1
     END                                     AS order_type,
     SAFE_CAST(COALESCE(total_price,0) + COALESCE(shipping_fee_customer,0) + COALESCE(surcharge_amount,0) AS FLOAT64)         AS net_amount,
     SAFE_CAST(COALESCE(total_discount,0) + COALESCE(total_items_discount,0) - COALESCE(platform_subsidy,0) AS FLOAT64)       AS aggregate_discount,
     SAFE_CAST(COALESCE(product_cogs,0) + COALESCE(gift_cogs,0) AS FLOAT64)                                                   AS total_cogs,
-    0                                                                                                                         AS other_income_refund,
-    0                                                                                                                         AS marketplace_return_fee,
+    0                                                                                                                        AS other_income_refund,
+    0                                                                                                                        AS marketplace_return_fee,
     COALESCE(SAFE_CAST(af_service_fee AS FLOAT64), 0)                                                                        AS marketplace_service_fee,
     SAFE_CAST(COALESCE(af_payment_fee,0) + COALESCE(af_seller_transaction_fee,0) AS FLOAT64)                                 AS marketplace_transaction_fee,
     COALESCE(SAFE_CAST(af_commission_fee AS FLOAT64), 0)                                                                     AS marketplace_admin_fee,
     COALESCE(SAFE_CAST(af_affiliate_commission AS FLOAT64), 0)                                                               AS marketplace_affiliate_fee,
     COALESCE(SAFE_CAST(af_shipping_fee_amount AS FLOAT64), 0)                                                                AS marketplace_shipping_fee,
-    SAFE_CAST(COALESCE(af_isr_income_tax_amount,0) + COALESCE(af_iva_vat_amount,0) + COALESCE(af_tax,0) AS FLOAT64)         AS marketplace_tax_fee,
+    SAFE_CAST(COALESCE(af_isr_income_tax_amount,0) + COALESCE(af_iva_vat_amount,0) + COALESCE(af_tax,0) AS FLOAT64)          AS marketplace_tax_fee,
     fee_marketplace - (
         COALESCE(SAFE_CAST(af_service_fee AS FLOAT64), 0)
       + SAFE_CAST(COALESCE(af_payment_fee,0) + COALESCE(af_seller_transaction_fee,0) AS FLOAT64)
@@ -270,19 +255,22 @@ stg_orders AS (
     0  AS shipment_cod_vat_amount,
     0  AS external_marketing_other_fee,
     CASE
-      WHEN NULLIF(DATE(received_date),   DATE '1900-01-01') IS NOT NULL THEN TRUE
-      WHEN NULLIF(DATE(reconciled_date), DATE '1900-01-01') IS NOT NULL THEN TRUE
+      WHEN NULLIF(DATE(received_at_ts),   DATE '1900-01-01') IS NOT NULL THEN TRUE
+      WHEN NULLIF(DATE(reconciled_at_ts), DATE '1900-01-01') IS NOT NULL THEN TRUE
       ELSE FALSE
-    END AS was_delivered
+    END AS was_delivered,
+    s.MarketId
 
   FROM `hv-data.a_dwh_pancake.FactOrder`          o
-  LEFT JOIN pancake_order_finalized                pof ON pof.order_id        = o.order_id  -- ✅ join lấy finalized_date
-  LEFT JOIN `hv-data.mdm_prod_dwh.shops`          s   ON o.external_shop_id  = s.ExternalShopId
-  LEFT JOIN `hv-data.mdm_prod_dwh.markets`        m   ON s.MarketId          = m.Id
-  LEFT JOIN `hv-data.a_dwh_pancake.DimEmployee`   e   ON o.marketer_id       = e.external_employee_id
-  LEFT JOIN `hv-data.mdm_prod_dwh.org_units`      org ON org.Type = 3 AND e.bu = org.Code
-  LEFT JOIN pancake_order_dominant_brand           sb  ON o.order_key         = sb.order_key
-  WHERE o.status_id NOT IN (0, 6, 7)
+    LEFT JOIN pancake_order_finalized                pof ON pof.order_key        = o.order_key  --  join lấy finalized_date
+    LEFT JOIN `hv-data.mdm_prod_dwh.shops`          s   ON CAST(o.shop_id AS STRING)  = s.ExternalShopId
+    LEFT JOIN `hv-data.mdm_prod_dwh.markets`        m   ON s.MarketId          = m.Id
+    LEFT JOIN `hv-data.a_dwh_pancake.DimEmployee`   e   ON o.marketer_id       = e.external_employee_id
+    LEFT JOIN `hv-data.mdm_prod_dwh.org_units`      org ON org.Type = 3 AND e.bu = org.Code
+    LEFT JOIN pancake_order_dominant_brand           sb  ON o.order_key         = sb.order_key
+  WHERE (o.status_id NOT IN (0, 6, 7)                          -- loại 0, 7, và 6 mặc định
+    OR (o.status_id = 6 AND o.confirmed_at_ts IS NOT NULL))    -- nhưng giữ lại 6 nếu có confirmed_date
+    AND o.shop_id IN (1942946009,1942976467,1942955945,714982840,1635973951)
 ),
 
 
@@ -291,12 +279,22 @@ stg_orders AS (
 -- ─────────────────────────────────────────────────────────────────────────────
 order_fx_rate AS (
   SELECT
-    o.order_id,
-    COALESCE(ex.base_fx_rate, 1) AS fx_rate
+  o.order_id,
+  CASE 
+    WHEN nguondulieu = 'portal' THEN COALESCE(ex.base_fx_rate, 1) 
+    WHEN o.country_id = 9 THEN 1
+    ELSE COALESCE(r.Rate, 1)  
+  END AS fx_rate
   FROM stg_orders o
   LEFT JOIN `hv-data.a_dwh.DimExchangeRate` ex
     ON  ex.project_id  = o.project_id
     AND CAST(ex.exchange_key AS STRING) = FORMAT_DATE('%Y%m%d', o.created_order)
+  LEFT JOIN `hv-data.mdm_prod_dwh.market_exchange_rate` r
+    ON r.MarketId = o.MarketId
+    AND r.EffectiveFrom = DATE_TRUNC(
+       DATE(o.created_order),
+       MONTH
+     )
 ),
 
 
@@ -393,10 +391,6 @@ base_metrics AS (
   LEFT JOIN order_status_classification                              sc  ON sc.order_id = o.order_id
   LEFT JOIN `hv-data.hvnet_products_dwh.us_countries`               c   ON c.CountryId = o.country_id
   LEFT JOIN `hv-data.hvnet_products_dwh.us_bussiness_units`         bu  ON bu.Id       = o.bu_id
-  CROSS JOIN cfg
-
-  WHERE o.created_order >= cfg.from_date
-    AND o.bu_id IN UNNEST(cfg.valid_bu_ids)
 
   GROUP BY
     o.nguondulieu, market, business_unit, o.sub_brand,
@@ -483,11 +477,17 @@ metrics_with_condition AS (
   SELECT
     *,
     CASE
-      WHEN display_status IN ('Hoàn', 'Hủy')                            THEN 'cancelled_fee'
+      WHEN display_status = 'Hoàn'                                       THEN 'returned'
+      WHEN display_status = 'Hủy'                                        THEN 'cancelled'
       WHEN display_status = 'Giao thành công'                            THEN 'delivered'
       WHEN display_status IN ('Mới', 'Đang gói hàng', 'Đang giao hàng') THEN 'pending'
       ELSE 'any'
-    END AS row_status_condition
+    END AS row_status_condition,
+    CASE
+      WHEN display_status IN ('Hoàn', 'Hủy') THEN 'cancelled_fee'
+      ELSE                                         'active'
+    END AS fee_status_condition
+
   FROM all_metrics_long
 )
 
@@ -514,12 +514,22 @@ SELECT
 FROM metrics_with_condition m
 JOIN metric_label_lookup    lk
   ON  lk.metric = m.metric
-  AND (
-        lk.status_condition = 'any'
-     OR lk.status_condition = m.row_status_condition
-  )
-
+  AND CASE lk.status_condition
+        WHEN 'any'           THEN TRUE
+        WHEN 'returned'      THEN m.row_status_condition = 'returned'
+        WHEN 'cancelled'     THEN m.row_status_condition = 'cancelled'
+        WHEN 'delivered'     THEN m.row_status_condition = 'delivered'
+        WHEN 'pending'       THEN m.row_status_condition = 'pending'
+        WHEN 'active'        THEN m.fee_status_condition = 'active'
+        WHEN 'cancelled_fee' THEN m.fee_status_condition = 'cancelled_fee'
+        ELSE FALSE
+      END
 WHERE m.value <> 0
-ORDER BY thitruong, bu_phongban, thang, Metric, nguondulieu
+AND m.month_key >= "2026-07"
 
--- )
+UNION ALL
+
+SELECT *
+FROM `hv-data.hv_fin.fin_orders-2026-06`
+WHERE thang <= "2026-06" AND thang >= "2026-01"
+ORDER BY thitruong, bu_phongban, thang, Metric, nguondulieu
