@@ -265,7 +265,7 @@ stg_orders AS (
     LEFT JOIN pancake_order_finalized                pof ON pof.order_key        = o.order_key  --  join lấy finalized_date
     LEFT JOIN `hv-data.mdm_prod_dwh.shops`          s   ON CAST(o.shop_id AS STRING)  = s.ExternalShopId
     LEFT JOIN `hv-data.mdm_prod_dwh.markets`        m   ON s.MarketId          = m.Id
-    LEFT JOIN `hv-data.a_dwh_pancake.DimEmployee`   e   ON o.marketer_id       = e.external_employee_id
+    LEFT JOIN `hv-data.a_dwh_pancake.DimEmployee`   e   ON o.marketer_id       = e.external_employee_id AND CAST(o.shop_id AS STRING) = e.shop_id
     LEFT JOIN `hv-data.mdm_prod_dwh.org_units`      org ON org.Type = 3 AND e.bu = org.Code
     LEFT JOIN pancake_order_dominant_brand           sb  ON o.order_key         = sb.order_key
   WHERE (o.status_id NOT IN (0, 6, 7)                          -- loại 0, 7, và 6 mặc định
