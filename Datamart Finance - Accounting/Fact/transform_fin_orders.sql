@@ -213,9 +213,9 @@ stg_orders AS (
     DATE(o.returned_at_ts)                     AS return_processed_date,
     m.ExternalId                              AS country_id,
     CASE o.shop_id
-      WHEN 1942976467 THEN org.ExternalId
       WHEN 1942946009 THEN 11
       WHEN 1943014207 THEN 7
+      ELSE org.ExternalId
     END                                    AS bu_id,
     sb.sub_brand,
     0 AS project_id,
